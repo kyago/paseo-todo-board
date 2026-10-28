@@ -184,6 +184,17 @@ export class Runner {
     }
   }
 
+  /** The SDK wants `provider/model`; a bare provider name takes that provider's default model. */
+  private async resolveProvider(value: string): Promise<string> {
+    const trimmed = value.trim();
+    if (trimmed.includes("/")) return trimmed;
+    const result = (await this.api().providers.listModels(trimmed)) as { models?: { id: string; isDefault?: boolean }[] };
+    const models = result.models ?? [];
+    const model = models.find((item) => item.isDefault) ?? models[0];
+    if (!model) throw new Error(`${trimmed}: 모델 목록이 비어 있습니다. 설정에 provider/model 형식으로 적어 주세요.`);
+    return `${trimmed}/${model.id}`;
+  }
+
   private async commit(card: Card, effect: Effect): Promise<Card> {
     const saved = await this.store.upsert(card);
     try {
@@ -206,7 +217,7 @@ export class Runner {
         }
         const agent = await this.api().agents.create({
           config: {
-            provider: settings.workerProvider,
+            provider: await this.resolveProvider(settings.workerProvider),
             modeId: settings.workerMode || undefined,
             mcpServers: { "todo-board": this.deps.mcp({ TODO_CARD_ID: card.id, TODO_CWD: card.cwd }) },
           },
@@ -220,7 +231,7 @@ export class Runner {
       case "create": {
         const agent = await this.api().agents.create({
           config: {
-            provider: settings.reviewerProvider,
+            provider: await this.resolveProvider(settings.reviewerProvider),
             modeId: settings.reviewerMode || undefined,
             mcpServers: { "todo-board": this.deps.mcp({ TODO_CARD_ID: card.id, TODO_STAGE: effect.stage, TODO_CWD: card.cwd }) },
           },

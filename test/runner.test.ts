@@ -26,6 +26,7 @@ function fakePaseo() {
       }),
     },
     workspaces: { list: async () => ({ entries: [] }) },
+    providers: { listModels: async (provider: string) => ({ models: [{ id: "m-old" }, { id: `${provider}-default`, isDefault: true }] }) },
   };
   return { paseo: paseo as any, created, sent };
 }
@@ -74,7 +75,8 @@ test("start creates the worker with the plan prompt and a card-bound MCP server;
   assert.equal(current.stage, "review");
   assert.equal(current.reviewerId, "agent-2");
   assert.equal(created[1].config.mcpServers["todo-board"].env.TODO_STAGE, "review");
-  assert.equal(created[1].config.provider, "codex");
+  assert.equal(created[0].config.provider, "claude/claude-default");
+  assert.equal(created[1].config.provider, "codex/codex-default");
 
   await report(card.id, "fail", "테스트 누락", "review");
   await runner.onTurnEnded("agent-2", { kind: "completed" });
