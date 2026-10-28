@@ -119,12 +119,15 @@ export class Runner {
     const entries = await readInbox(this.deps.inboxDir);
     let latest: Extract<InboxMessage, { kind: "report" }> | null = null;
     for (const entry of entries) {
-      if (entry.message.kind === "add") {
-        await this.handleAdd(entry.message);
+      const { message } = entry;
+      if (message.kind === "report") {
+        if (message.cardId !== card.id) continue;
+        latest = message;
         await consume(entry);
-      } else if (entry.message.cardId === card.id) {
-        latest = entry.message;
+      } else {
         await consume(entry);
+        if (message.kind === "add") await this.handleAdd(message);
+        else await this.handleStart(message);
       }
     }
     if (latest) {

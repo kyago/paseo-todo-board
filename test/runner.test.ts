@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -35,6 +35,7 @@ async function setup() {
   const store = new BoardStore(join(dir, "board.json"));
   await store.load();
   const inboxDir = join(dir, "inbox");
+  await mkdir(inboxDir, { recursive: true });
   const fake = fakePaseo();
   const runner = new Runner({
     store,
