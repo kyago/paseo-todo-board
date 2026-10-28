@@ -1,9 +1,11 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { BoardPanel } from "./client/board-panel";
 import { BoardSettingsScreen } from "./client/settings-screen";
-import { addCard } from "./shared/board";
+import { addCard, clientLog } from "./shared/board";
 
 export default function contribute(client: PluginClientContext) {
+  const log = (message: string) => void client.rpc(clientLog, { message }).catch(() => {});
+  log("contribute start");
   const removers = [
     client.addWorkspacePanel({ id: "board", title: "투두 보드", icon: "ListTodo", locations: ["workspace", "explorer"], Component: BoardPanel }),
     client.addCommandCenterItem({
@@ -29,6 +31,7 @@ export default function contribute(client: PluginClientContext) {
     }),
     client.addSettingsScreen({ id: "board", title: "Options", icon: "Settings", Component: BoardSettingsScreen }),
   ];
+  log("contribute done: panel, command, slash, settings registered");
   return () => {
     for (const remove of removers) void remove();
   };

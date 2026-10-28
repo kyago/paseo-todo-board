@@ -5,7 +5,7 @@ import { installMcpScript, mcpServerConfig, resolveNode } from "./server/mcp.ts"
 import { boardFile, inboxDir, mcpScriptFile } from "./server/paths.ts";
 import { Runner } from "./server/runner.ts";
 import { BoardStore } from "./server/store.ts";
-import { addCard, cardAction, listCards } from "./shared/board.ts";
+import { addCard, cardAction, clientLog, listCards } from "./shared/board.ts";
 import { type BoardSettingsValues, boardSettings } from "./shared/settings.ts";
 
 export default function contribute(server: PluginServerContext) {
@@ -40,6 +40,10 @@ export default function contribute(server: PluginServerContext) {
     console.log(`[todo-board] ready: ${store.all().length} cards, mcp ${node} ${script}`);
   })().catch((error) => console.error("[todo-board] startup failed", error));
 
+  server.handle(clientLog, ({ message }) => {
+    console.log(`[client] ${message}`);
+    return {};
+  });
   server.handle(listCards, async ({ workspaceId, cwd }, { paseo }) => {
     await ready;
     runner.attach(paseo);

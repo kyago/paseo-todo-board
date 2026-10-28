@@ -94,3 +94,6 @@ export const cardAction = defineRpc({
   input: z.object({ cardId: z.string(), action: z.enum(CARD_ACTIONS) }),
   output: z.object({ card: CardSchema.nullable() }),
 });
+
+/** Client-side diagnostics land in `paseo plugin logs`, since the app console is out of reach. */
+export const clientLog = defineRpc({ name: "board.log", input: z.object({ message: z.string() }), output: z.object({}) });
