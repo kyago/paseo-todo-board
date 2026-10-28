@@ -58,10 +58,16 @@ export default function contribute(server: PluginServerContext) {
 
   const removers = [
     // Every new session gets todo_add; sessions the board creates already carry their own entry.
-    server.before("agent.create", async ({ request }) => {
+    server.before("agent.create", async ({ request }, { paseo }) => {
       await ready;
+      runner.attach(paseo);
       if (!values.injectTools || request.config.mcpServers?.["todo-board"]) return;
       return { ...request, config: { ...request.config, mcpServers: { ...request.config.mcpServers, "todo-board": mcp({ TODO_CWD: request.config.cwd }) } } };
+    }),
+    // The earliest moments a daemon session reaches the plugin; a `todo_start` before any of them waits in the queue.
+    server.on("agent.turn_started", async (_event, { paseo }) => {
+      await ready;
+      runner.attach(paseo);
     }),
     server.on("agent.turn_ended", async ({ agent, outcome }, { paseo }) => {
       await ready;

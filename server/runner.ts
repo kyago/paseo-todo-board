@@ -5,7 +5,7 @@ import { type AgentStage, type Card, type CardAction, type InboxMessage, STAGE_L
 import { stagePrompt } from "../shared/prompts.ts";
 import type { BoardSettingsValues } from "../shared/settings.ts";
 import { consume, readInbox } from "./inbox.ts";
-import { type Effect, type TurnOutcome, advance, applyReport, applyTurnEnded, newCard, rejectToImplement, start } from "./machine.ts";
+import { type Effect, type TurnOutcome, advance, applyReport, applyTurnEnded, newCard, rejectToImplement, retryStage, start } from "./machine.ts";
 import type { StdioMcpServer } from "./mcp.ts";
 import type { BoardStore } from "./store.ts";
 
@@ -66,11 +66,11 @@ export class Runner {
     return this.store.upsert(newCard(input));
   }
 
-  /** The user's move: todo → plan. One card runs per directory; the rest queue. */
+  /** The user's move: todo → plan. One card runs per directory; the rest queue, as does a start before any daemon session exists. */
   async start(cardId: string): Promise<Card | null> {
     const card = this.store.get(cardId);
     if (!card || card.stage !== "todo") return card ?? null;
-    if (this.activeIn(card.cwd, card.id)) return this.store.upsert({ ...card, queued: true, updatedAt: new Date().toISOString() });
+    if (this.activeIn(card.cwd, card.id) || !this.paseo) return this.store.upsert({ ...card, queued: true, updatedAt: new Date().toISOString() });
     const baseRef = await gitHead(card.cwd);
     const step = start({ ...card, baseRef, queued: false });
     return this.commit(step.card, step.effect);
@@ -86,6 +86,10 @@ export class Runner {
       case "advance": {
         if (card.stage === "todo") return this.start(cardId);
         const step = advance(card);
+        return this.commit(step.card, step.effect);
+      }
+      case "retry": {
+        const step = retryStage(card);
         return this.commit(step.card, step.effect);
       }
       case "reject": {
@@ -254,9 +258,10 @@ export class Runner {
     }
   }
 
-  /** Turn-end events are not replayed after a restart; a running card whose session is idle is treated as just ended. */
+  /** Turn-end events are not replayed after a restart; a running card whose session is idle is treated as just ended. Queued cards get their turn. */
   private async reconcile(): Promise<void> {
     await this.processInbox();
+    for (const cwd of new Set(this.store.all().filter((card) => card.queued).map((card) => card.cwd))) await this.releaseQueue(cwd);
     for (const card of this.store.all()) {
       if (card.state !== "running") continue;
       const agentId = responsibleAgent(card);

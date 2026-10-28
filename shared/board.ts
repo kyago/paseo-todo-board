@@ -74,7 +74,7 @@ export const InboxMessageSchema = z.discriminatedUnion("kind", [
 ]);
 export type InboxMessage = z.infer<typeof InboxMessageSchema>;
 
-export const CARD_ACTIONS = ["start", "advance", "reject", "complete", "delete", "pause", "resume"] as const;
+export const CARD_ACTIONS = ["start", "advance", "retry", "reject", "complete", "delete", "pause", "resume"] as const;
 export type CardAction = (typeof CARD_ACTIONS)[number];
 
 export const listCards = defineRpc({

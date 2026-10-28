@@ -43,14 +43,14 @@ async function setup() {
     settings: () => boardSettings.schema.parse({}),
     mcp: (env) => ({ type: "stdio", command: "node", args: ["mcp.mjs"], env, alwaysLoad: true }),
   });
-  runner.attach(fake.paseo);
   const report = (cardId: string, status: string, summary: string, stage?: string) =>
     writeFile(join(inboxDir, `${Date.now()}-${Math.random()}.json`), JSON.stringify({ kind: "report", cardId, stage, status, summary }));
-  return { store, runner, inboxDir, report, ...fake };
+  return { store, runner, inboxDir, report, attach: () => runner.attach(fake.paseo), ...fake };
 }
 
 test("start creates the worker with the plan prompt and a card-bound MCP server; later stages reuse or create sessions", async () => {
-  const { runner, store, created, sent, report } = await setup();
+  const { runner, store, created, sent, report, attach } = await setup();
+  attach();
   const card = await runner.add({ workspaceId: "w", cwd: "/nonexistent-dir", title: "기능 A" });
   let current = (await runner.start(card.id))!;
   assert.equal(current.stage, "plan");
@@ -85,7 +85,8 @@ test("start creates the worker with the plan prompt and a card-bound MCP server;
 });
 
 test("a turn from the session that is not responsible for the stage leaves the card alone", async () => {
-  const { runner, store, report } = await setup();
+  const { runner, store, report, attach } = await setup();
+  attach();
   const card = await runner.add({ workspaceId: "w", cwd: "/x", title: "B" });
   await runner.start(card.id);
   await report(card.id, "done", "p");
@@ -104,7 +105,8 @@ test("a turn from the session that is not responsible for the stage leaves the c
 });
 
 test("one card runs per directory; the next queued card starts when the first completes", async () => {
-  const { runner, store } = await setup();
+  const { runner, store, attach } = await setup();
+  attach();
   const first = await runner.add({ workspaceId: "w", cwd: "/x", title: "1" });
   const second = await runner.add({ workspaceId: "w", cwd: "/x", title: "2" });
   await runner.start(first.id);
@@ -117,7 +119,8 @@ test("one card runs per directory; the next queued card starts when the first co
 });
 
 test("todo_start from chat starts the matching todo card in that directory", async () => {
-  const { runner, store, inboxDir } = await setup();
+  const { runner, store, inboxDir, attach } = await setup();
+  attach();
   const other = await runner.add({ workspaceId: "w", cwd: "/y", title: "로그인 수정" });
   const target = await runner.add({ workspaceId: "w", cwd: "/x", title: "로그인 수정" });
   await writeFile(join(inboxDir, "s.json"), JSON.stringify({ kind: "start", cwd: "/x", query: "로그인" }));
@@ -127,6 +130,18 @@ test("todo_start from chat starts the matching todo card in that directory", asy
   await writeFile(join(inboxDir, "t.json"), JSON.stringify({ kind: "start", cwd: "/x", query: "없는 카드" }));
   await runner.processInbox();
   assert.equal(store.all().filter((card) => card.stage === "plan").length, 1);
+});
+
+test("a start before any daemon session queues the card; the first session starts it", async () => {
+  const { runner, store, attach, created } = await setup();
+  const card = await runner.add({ workspaceId: "w", cwd: "/x", title: "early" });
+  const queued = (await runner.start(card.id))!;
+  assert.equal(queued.queued, true);
+  assert.equal(queued.stage, "todo");
+  attach();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(store.get(card.id)!.stage, "plan");
+  assert.equal(created.length, 1);
 });
 
 test("todo_add messages in the inbox become cards", async () => {

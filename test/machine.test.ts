@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { advance, applyReport, applyTurnEnded, newCard, nextStage, rejectToImplement, start } from "../server/machine.ts";
+import { advance, applyReport, applyTurnEnded, newCard, nextStage, rejectToImplement, retryStage, start } from "../server/machine.ts";
 
 const opts = { maxRetries: 2, autoAdvance: true };
 const at = (stage: Parameters<typeof nextStage>[0], extra = {}) => ({ ...newCard({ workspaceId: "w", cwd: "/p", title: "t" }), stage, state: "running" as const, ...extra });
@@ -91,4 +91,15 @@ test("manual advance and reject mirror the automatic moves", () => {
   const back = rejectToImplement(at("qa"), "사람이 반려");
   assert.equal(back.card.stage, "implement");
   assert.equal(back.card.retries, 1);
+});
+
+test("retry runs the current stage again and carries the last rejection into implementation", () => {
+  const blocked = retryStage(at("plan", { state: "blocked" as const, attention: "보고 없음" }));
+  assert.equal(blocked.card.state, "running");
+  assert.equal(blocked.card.attention, null);
+  assert.deepEqual(blocked.effect, { kind: "send", stage: "plan", extra: undefined });
+  const failed = at("implement", { state: "blocked" as const, reports: [{ stage: "review" as const, status: "fail" as const, summary: "누락", at: "t" }] });
+  assert.deepEqual(retryStage(failed).effect, { kind: "send", stage: "implement", extra: "누락" });
+  assert.deepEqual(retryStage(at("qa", { state: "needs_human" as const })).effect, { kind: "create", stage: "qa" });
+  assert.equal(retryStage(at("todo")).effect.kind, "none");
 });

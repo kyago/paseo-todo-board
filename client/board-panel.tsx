@@ -24,7 +24,7 @@ function actionsFor(card: Card): { label: string; action: CardAction }[] {
   if (card.state === "running") list.push(card.paused ? { label: "재개", action: "resume" } : { label: "일시정지", action: "pause" });
   else {
     if (card.paused) list.push({ label: "재개", action: "resume" });
-    list.push({ label: "다음 단계로", action: "advance" });
+    list.push({ label: "다시 실행", action: "retry" }, { label: "다음 단계로", action: "advance" });
     if (card.stage === "review" || card.stage === "qa") list.push({ label: "구현으로 반려", action: "reject" });
     list.push({ label: "완료", action: "complete" });
   }

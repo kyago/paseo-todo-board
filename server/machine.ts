@@ -71,6 +71,15 @@ export function start(card: Card): { card: Card; effect: Effect } {
   return advance(card);
 }
 
+/** Runs the current stage again: the worker gets the stage prompt once more, review and QA get a fresh session. */
+export function retryStage(card: Card): { card: Card; effect: Effect } {
+  if (card.stage === "todo" || card.stage === "done") return { card, effect: NONE };
+  return {
+    card: { ...card, state: "running", reviewerId: null, attention: null, queued: false, updatedAt: now() },
+    effect: entryEffect(card.stage, card.reports.at(-1)?.status === "fail" ? card.reports.at(-1)?.summary : undefined),
+  };
+}
+
 /** Review or QA sent the work back; the worker session gets the reason. */
 export function rejectToImplement(card: Card, reason: string): { card: Card; effect: Effect } {
   return {
