@@ -85,7 +85,7 @@ export const listCards = defineRpc({
 
 /** Every card on this daemon, for the sidebar screen that spans workspaces. */
 export const listAllCards = defineRpc({
-  name: "board.listAll",
+  name: "board.list_all",
   input: z.object({}),
   output: z.object({ cards: z.array(CardSchema) }),
 });

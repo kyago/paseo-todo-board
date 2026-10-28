@@ -21,7 +21,7 @@ export function BoardScreen({ theme, layout, params }: PluginScreenProps) {
   const act = useRpc(cardAction);
   const queryClient = useQueryClient();
   const preselected = typeof params.workspaceId === "string" ? params.workspaceId : null;
-  const [selected, setSelected] = useState<string>(preselected ?? ALL);
+  const [selected, setSelected] = useState(preselected ?? ALL);
 
   const workspaces = useQuery({
     queryKey: ["todo-board", "workspaces"],
