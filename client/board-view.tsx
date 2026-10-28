@@ -51,6 +51,8 @@ const makeStyles = (theme: PluginTheme, compact: boolean) => ({
   error: { color: theme.colors.statusDanger, fontSize: 12 },
   board: { flexDirection: compact ? ("column" as const) : ("row" as const), gap: 12, paddingBottom: 12 },
   column: { width: compact ? undefined : 260, gap: 8 },
+  // A rule between stages: vertical beside each column on wide layouts, horizontal between stacked sections on compact ones.
+  divider: compact ? { height: 1, backgroundColor: theme.colors.border, marginVertical: 4 } : { width: 1, backgroundColor: theme.colors.border, alignSelf: "stretch" as const },
   columnTitle: { color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" as const, textTransform: "uppercase" as const },
   card: { backgroundColor: theme.colors.surface1, borderColor: theme.colors.border, borderWidth: 1, borderRadius: 10, padding: 10, gap: 6 },
   title: { color: theme.colors.foreground, fontSize: 14, fontWeight: "600" as const },
@@ -107,9 +109,10 @@ export function BoardView({ theme, compact, cards, onAdd, onAction, showFolder, 
       </View>
       {error ? <Text style={styles.error}>{error instanceof Error ? error.message : String(error)}</Text> : null}
       <ScrollView horizontal={!compact} contentContainerStyle={styles.board}>
-        {STAGES.map((stage) => {
+        {STAGES.map((stage, index) => {
           const column = cards.filter((card) => card.stage === stage);
-          return (
+          return [
+            index > 0 ? <View key={`${stage}-divider`} style={styles.divider} /> : null,
             <View key={stage} style={styles.column}>
               <Text style={styles.columnTitle}>
                 {STAGE_LABELS[stage]} · {column.length}
@@ -149,8 +152,8 @@ export function BoardView({ theme, compact, cards, onAdd, onAction, showFolder, 
                   </View>
                 );
               })}
-            </View>
-          );
+            </View>,
+          ];
         })}
       </ScrollView>
     </View>
