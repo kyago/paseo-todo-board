@@ -1,0 +1,13 @@
+{
+  "id": "todo-board",
+  "name": "Todo board",
+  "description": "A kanban board per workspace. Move a card from To do to Plan and the board runs plan, implement, review and QA sessions by itself, reporting after each stage.",
+  "translations": {
+    "ko": {
+      "name": "투두 보드",
+      "description": "워크스페이스별 칸반 보드. 카드를 '할 일'에서 '계획'으로 옮기면 계획·구현·검토·품질 검증을 AI 세션이 차례로 진행하고 단계마다 보고한다."
+    }
+  },
+  "media": [],
+  "requirements": { "paseo": ">=0.13.0" }
+}
