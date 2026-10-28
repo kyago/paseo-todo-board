@@ -36,6 +36,15 @@ const tools = [
       required: ["title"],
     },
   },
+  {
+    name: "todo_start",
+    description: "투두 보드의 '할 일' 카드를 '계획'으로 옮겨 자동 진행을 시작한다. 사용자가 그 카드를 시작하라고 할 때만 쓴다.",
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string", description: "카드 제목의 일부 또는 카드 id 앞부분" } },
+      required: ["query"],
+    },
+  },
 ];
 
 function drop(message) {
@@ -55,6 +64,10 @@ function call(name, args) {
   if (name === "todo_add") {
     drop({ kind: "add", cwd, title: String(args.title ?? "").trim(), detail: args.detail ? String(args.detail) : undefined });
     return { text: "'할 일'에 추가했습니다: " + args.title };
+  }
+  if (name === "todo_start") {
+    drop({ kind: "start", cwd, query: String(args.query ?? "").trim() });
+    return { text: "시작을 요청했습니다: " + args.query + ". 보드가 계획 세션을 만듭니다." };
   }
   return { text: "알 수 없는 도구: " + name, isError: true };
 }

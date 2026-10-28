@@ -69,6 +69,8 @@ export const InboxMessageSchema = z.discriminatedUnion("kind", [
     summary: z.string(),
   }),
   z.object({ kind: z.literal("add"), cwd: z.string(), title: z.string().min(1), detail: z.string().optional() }),
+  /** The user's "start" said in chat: a todo card in this directory whose id starts with or title contains `query`. */
+  z.object({ kind: z.literal("start"), cwd: z.string(), query: z.string().min(1) }),
 ]);
 export type InboxMessage = z.infer<typeof InboxMessageSchema>;
 

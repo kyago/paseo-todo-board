@@ -143,13 +143,24 @@ export class Runner {
     if (attention !== card.attention) await this.store.upsert({ ...card, attention, updatedAt: new Date().toISOString() });
   }
 
-  /** New cards from `todo_add` show up at once; reports wait for their session's turn to end. */
+  /** `todo_add` and `todo_start` take effect at once; reports wait for their session's turn to end. */
   async processInbox(): Promise<void> {
     for (const entry of await readInbox(this.deps.inboxDir)) {
-      if (entry.message.kind !== "add") continue;
-      await this.handleAdd(entry.message);
+      if (entry.message.kind === "report") continue;
       await consume(entry);
+      if (entry.message.kind === "add") await this.handleAdd(entry.message);
+      else await this.handleStart(entry.message);
     }
+  }
+
+  private async handleStart(message: Extract<InboxMessage, { kind: "start" }>): Promise<void> {
+    const query = message.query.toLowerCase();
+    const card = this.store
+      .all()
+      .filter((card) => card.cwd === message.cwd && card.stage === "todo")
+      .find((card) => card.id.startsWith(query) || card.title.toLowerCase().includes(query));
+    if (card) await this.start(card.id);
+    else console.error(`[todo-board] start: no todo card matching "${message.query}" in ${message.cwd}`);
   }
 
   private async handleAdd(message: Extract<InboxMessage, { kind: "add" }>): Promise<void> {

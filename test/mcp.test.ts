@@ -33,7 +33,7 @@ test("the MCP server answers initialize and lists both tools", async () => {
     { jsonrpc: "2.0", id: 2, method: "tools/list" },
   ]);
   assert.equal(init.result.protocolVersion, "2025-03-26");
-  assert.deepEqual(list.result.tools.map((tool: any) => tool.name), ["todo_report", "todo_add"]);
+  assert.deepEqual(list.result.tools.map((tool: any) => tool.name), ["todo_report", "todo_add", "todo_start"]);
 });
 
 test("todo_report drops a report for the session's card and todo_add drops a new card", async () => {
