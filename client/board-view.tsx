@@ -1,11 +1,11 @@
-import { type PluginWorkspacePanelProps, useRpc, useWorkspace } from "@getpaseo/plugin/client";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { type Card, type CardAction, STAGE_LABELS, STAGES, addCard, cardAction, listCards } from "../shared/board";
+import { type Card, type CardAction, STAGE_LABELS, STAGES } from "../shared/board";
 
-type PluginTheme = PluginWorkspacePanelProps["theme"];
+export type PluginTheme = PluginScreenProps["theme"];
 type Colors = PluginTheme["colors"];
+export const folderName = (cwd: string) => cwd.split("/").filter(Boolean).at(-1) ?? cwd;
 
 function badge(card: Card, colors: Colors): { text: string; color: string } {
   if (card.queued) return { text: "대기열", color: colors.statusWarning };
@@ -63,52 +63,50 @@ const makeStyles = (theme: PluginTheme, compact: boolean) => ({
   empty: { color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic" as const },
 });
 
-export function BoardPanel({ theme, layout, workspaceId }: PluginWorkspacePanelProps) {
-  const cwd = useWorkspace(workspaceId, (workspace) => workspace.directory);
-  const list = useRpc(listCards);
-  const add = useRpc(addCard);
-  const act = useRpc(cardAction);
-  const queryClient = useQueryClient();
-  const queryKey = ["todo-board", workspaceId];
-  const invalidate = () => queryClient.invalidateQueries({ queryKey });
-  const query = useQuery({
-    queryKey,
-    queryFn: () => list({ workspaceId, cwd: cwd ?? "" }),
-    enabled: Boolean(cwd),
-    refetchInterval: 3000,
-  });
-  const addMutation = useMutation({ mutationFn: (title: string) => add({ workspaceId, cwd: cwd ?? "", title }), onSuccess: invalidate });
-  const actMutation = useMutation({ mutationFn: (input: { cardId: string; action: CardAction }) => act(input), onSuccess: invalidate });
+export interface BoardViewProps {
+  theme: PluginTheme;
+  compact: boolean;
+  cards: Card[];
+  /** Null disables the add row (no workspace chosen). */
+  onAdd: ((title: string) => void) | null;
+  onAction: (cardId: string, action: CardAction) => void;
+  /** Show each card's folder; for the cross-workspace view. */
+  showFolder?: boolean;
+  error?: unknown;
+  header?: React.ReactNode;
+}
+
+export function BoardView({ theme, compact, cards, onAdd, onAction, showFolder, error, header }: BoardViewProps) {
   const [title, setTitle] = useState("");
-  const styles = useMemo(() => makeStyles(theme, layout.compact), [theme, layout.compact]);
+  const styles = useMemo(() => makeStyles(theme, compact), [theme, compact]);
 
   const submit = () => {
     const text = title.trim();
-    if (!text) return;
-    addMutation.mutate(text);
+    if (!text || !onAdd) return;
+    onAdd(text);
     setTitle("");
   };
-  const cards = query.data?.cards ?? [];
-  const error = query.error ?? addMutation.error ?? actMutation.error;
 
   return (
     <View style={styles.screen}>
+      {header}
       <View style={styles.addRow}>
         <TextInput
           style={styles.input}
           value={title}
           onChangeText={setTitle}
           onSubmitEditing={submit}
-          placeholder="할 일 추가 (Enter)"
+          editable={Boolean(onAdd)}
+          placeholder={onAdd ? "할 일 추가 (Enter)" : "워크스페이스를 고르면 추가할 수 있습니다"}
           placeholderTextColor={theme.colors.foregroundMuted}
           accessibilityLabel="할 일 제목"
         />
-        <Pressable accessibilityRole="button" accessibilityLabel="할 일 추가" onPress={submit} style={styles.primary}>
+        <Pressable accessibilityRole="button" accessibilityLabel="할 일 추가" onPress={submit} disabled={!onAdd} style={[styles.primary, !onAdd && { opacity: 0.5 }]}>
           <Text style={styles.primaryText}>추가</Text>
         </Pressable>
       </View>
       {error ? <Text style={styles.error}>{error instanceof Error ? error.message : String(error)}</Text> : null}
-      <ScrollView horizontal={!layout.compact} contentContainerStyle={styles.board}>
+      <ScrollView horizontal={!compact} contentContainerStyle={styles.board}>
         {STAGES.map((stage) => {
           const column = cards.filter((card) => card.stage === stage);
           return (
@@ -123,6 +121,7 @@ export function BoardPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
                 return (
                   <View key={card.id} style={styles.card}>
                     <Text style={styles.title}>{card.title}</Text>
+                    {showFolder ? <Text style={styles.meta}>📁 {folderName(card.cwd)}</Text> : null}
                     {card.detail ? <Text style={styles.meta}>{card.detail}</Text> : null}
                     <Text style={[styles.meta, { color: mark.color }]}>
                       {mark.text}
@@ -140,7 +139,7 @@ export function BoardPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
                           key={action}
                           accessibilityRole="button"
                           accessibilityLabel={`${card.title}: ${label}`}
-                          onPress={() => actMutation.mutate({ cardId: card.id, action })}
+                          onPress={() => onAction(card.id, action)}
                           style={styles.button}
                         >
                           <Text style={styles.buttonText}>{label}</Text>

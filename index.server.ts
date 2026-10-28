@@ -5,7 +5,7 @@ import { installMcpScript, mcpServerConfig, resolveNode } from "./server/mcp.ts"
 import { boardFile, inboxDir, mcpScriptFile } from "./server/paths.ts";
 import { Runner } from "./server/runner.ts";
 import { BoardStore } from "./server/store.ts";
-import { addCard, cardAction, clientLog, listCards } from "./shared/board.ts";
+import { addCard, cardAction, clientLog, listAllCards, listCards } from "./shared/board.ts";
 import { type BoardSettingsValues, boardSettings } from "./shared/settings.ts";
 
 export default function contribute(server: PluginServerContext) {
@@ -48,6 +48,11 @@ export default function contribute(server: PluginServerContext) {
     await ready;
     runner.attach(paseo);
     return { cards: store.list(workspaceId, cwd) };
+  });
+  server.handle(listAllCards, async (_input, { paseo }) => {
+    await ready;
+    runner.attach(paseo);
+    return { cards: store.all() };
   });
   server.handle(addCard, async ({ workspaceId, cwd, title, detail }, { paseo }) => {
     await ready;
