@@ -5,13 +5,17 @@ export interface PromptCard {
   title: string;
   detail: string;
   baseRef: string | null;
+  /** Absolute path of the plan file, outside the repository. */
+  planPath: string;
+  /** The plan text once it exists; embedded into later prompts so no session has to read outside its repository. */
+  plan: string | null;
 }
-
-export const planFile = (card: Pick<PromptCard, "id">) => `docs/plans/todo-${card.id.slice(0, 8)}.md`;
 
 const diffLine = (card: PromptCard) => (card.baseRef ? `\`git diff ${card.baseRef}\`로 변경 내용을 읽는다.` : "작업 트리의 변경 파일 전체를 읽는다.");
 const NO_EDIT = "코드를 수정하지 않는다. 다른 관점은 다른 팀원이 보니 이 역할의 범위만 본다.";
 const VERDICT = "수정이 필요하면 status=fail에 수정 목록을, 문제가 없으면 status=done에 확인한 내용을 보고한다.";
+/** The plan as a quoted section; prompts that compare work against the plan include it in full. */
+export const planSection = (card: PromptCard) => (card.plan ? `계획:\n<plan>\n${card.plan.trim()}\n</plan>` : `계획 파일: ${card.planPath} (없으면 카드 상세를 계획으로 본다)`);
 
 export interface Role {
   id: string;
@@ -26,7 +30,7 @@ export const ROLES: Role[] = [
     id: "correctness",
     label: "정확성·회귀",
     stage: "review",
-    prompt: (card) => [diffLine(card), `\`${planFile(card)}\`의 계획과 비교해 누락, 논리 오류, 경계 조건, 기존 동작의 회귀를 검토한다. ${NO_EDIT}`, VERDICT].join("\n"),
+    prompt: (card) => [diffLine(card), planSection(card), `계획과 비교해 누락, 논리 오류, 경계 조건, 기존 동작의 회귀를 검토한다. ${NO_EDIT}`, VERDICT].join("\n"),
   },
   {
     id: "security",
@@ -80,7 +84,8 @@ export const ROLES: Role[] = [
     stage: "qa",
     prompt: (card) =>
       [
-        `카드 상세의 수용 기준과 \`${planFile(card)}\`의 목표를 항목별로 나열하고, 코드를 읽고 가능하면 직접 실행해 각 항목의 충족 여부를 확인한다.`,
+        planSection(card),
+        "카드 상세의 수용 기준과 계획의 목표를 항목별로 나열하고, 코드를 읽고 가능하면 직접 실행해 각 항목의 충족 여부를 확인한다.",
         "변경된 동작을 덮는 테스트가 없으면 미충족으로 본다. 코드를 수정하지 않는다.",
         "항목별 ✔/✘ 표를 보고에 넣고, ✘가 하나라도 있으면 status=fail, 모두 ✔이면 status=done.",
       ].join("\n"),

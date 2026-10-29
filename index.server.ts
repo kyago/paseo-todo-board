@@ -2,7 +2,7 @@ import { watch } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { installMcpScript, mcpServerConfig, resolveNode } from "./server/mcp.ts";
-import { boardFile, inboxDir, mcpScriptFile } from "./server/paths.ts";
+import { boardFile, inboxDir, mcpScriptFile, plansDir } from "./server/paths.ts";
 import { Runner } from "./server/runner.ts";
 import { BoardStore } from "./server/store.ts";
 import { addCard, cardAction, clientLog, listAllCards, listCards } from "./shared/board.ts";
@@ -22,7 +22,7 @@ export default function contribute(server: PluginServerContext) {
   const inbox = inboxDir();
   const script = mcpScriptFile();
   const mcp = (env: Record<string, string>) => mcpServerConfig(node, script, { TODO_INBOX: inbox, ...env });
-  const runner = new Runner({ store, inboxDir: inbox, settings: () => values, mcp });
+  const runner = new Runner({ store, inboxDir: inbox, plansDir: plansDir(), settings: () => values, mcp });
 
   let watcher: ReturnType<typeof watch> | null = null;
   let timer: NodeJS.Timeout | null = null;

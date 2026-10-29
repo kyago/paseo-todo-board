@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { type Card, type CardAction, type InboxMessage, STAGE_LABELS } from "../shared/board.ts";
-import { BLOCKED_MARKER, planFile, stagePrompt } from "../shared/prompts.ts";
+import { BLOCKED_MARKER, type PromptCard, stagePrompt } from "../shared/prompts.ts";
 import { rolesFor } from "../shared/roles.ts";
 import type { BoardSettingsValues } from "../shared/settings.ts";
 import { commitAll, createDraftPr, gitHead, hasRemote, isGitRepo, pushBranch } from "./git.ts";
@@ -17,6 +17,8 @@ type Paseo = PluginHandlerContext["paseo"];
 export interface RunnerDeps {
   store: BoardStore;
   inboxDir: string;
+  /** Plan files live here, outside every repository. */
+  plansDir: string;
   settings: () => BoardSettingsValues;
   /** Builds the MCP server entry for a session the board creates. */
   mcp: (env: Record<string, string>) => StdioMcpServer;
@@ -33,6 +35,7 @@ export const isBoardToolRequest = (request: PermissionLike): boolean =>
   request.metadata?.serverName === "todo-board" || request.name.startsWith("mcp__todo-board__") || /todo-board/i.test(request.title ?? "");
 
 const workDir = (card: Card) => card.workCwd ?? card.cwd;
+const planName = (card: Pick<Card, "id">) => `todo-${card.id.slice(0, 8)}.md`;
 const stamp = () => new Date().toISOString();
 
 export class Runner {
@@ -239,9 +242,22 @@ export class Runner {
     }
   }
 
+  private planPath(card: Pick<Card, "id">): string {
+    return join(this.deps.plansDir, planName(card));
+  }
+
+  private async readPlan(card: Card): Promise<string | null> {
+    return readFile(this.planPath(card), "utf8").catch(() => null);
+  }
+
+  /** What prompts need to know about the card, including the plan text once it exists. */
+  private async promptCard(card: Card): Promise<PromptCard> {
+    return { id: card.id, title: card.title, detail: card.detail, baseRef: card.baseRef, planPath: this.planPath(card), plan: await this.readPlan(card) };
+  }
+
   /** A read-only planning turn cannot write files, so the plan text becomes the plan file (an existing file is kept). */
   private async ensurePlanFile(card: Card, summary: string): Promise<void> {
-    const file = join(workDir(card), planFile(card));
+    const file = this.planPath(card);
     try {
       await mkdir(dirname(file), { recursive: true });
       await writeFile(file, `# ${card.title}\n\n${summary}\n`, { flag: "wx" });
@@ -288,7 +304,7 @@ export class Runner {
     switch (effect.kind) {
       case "send": {
         const planViaMessage = effect.stage === "plan" && this.planViaMessage();
-        const prompt = stagePrompt(card, effect.stage, { extra: effect.extra, planViaMessage });
+        const prompt = stagePrompt(await this.promptCard(card), effect.stage, { extra: effect.extra, planViaMessage });
         const mode = (effect.stage === "plan" ? settings.planMode || settings.workerMode : settings.workerMode) || undefined;
         if (card.agentId) {
           await this.api().agents.ref(card.agentId).send(prompt, { sessionMode: mode });
@@ -307,13 +323,14 @@ export class Runner {
       case "create": {
         const provider = await this.resolveProvider(settings.reviewerProvider);
         const roles = rolesFor(effect.stage, effect.stage === "review" ? settings.reviewRoles : settings.qaRoles);
+        const promptCard = await this.promptCard(card);
         const reviewers = [];
         for (const role of roles) {
           const agentId = await this.createSession(card, {
             provider,
             modeId: settings.reviewerMode || undefined,
             title: `[투두 ${STAGE_LABELS[effect.stage]} · ${role.label}] ${card.title}`,
-            prompt: stagePrompt(card, effect.stage, { role }),
+            prompt: stagePrompt(promptCard, effect.stage, { role }),
             env: { TODO_STAGE: effect.stage },
             labels: { "todo-board/stage": effect.stage, "todo-board/role": role.id },
           });
@@ -361,7 +378,7 @@ export class Runner {
     await commitAll(cwd, `[투두] ${card.title}`);
     if (!(await hasRemote(cwd))) throw new Error("origin 원격이 없습니다. 커밋은 브랜치에 남겼습니다.");
     await pushBranch(cwd, card.branch!);
-    const plan = await readFile(join(cwd, planFile(card)), "utf8").catch(() => "(계획 파일 없음)");
+    const plan = (await this.readPlan(card)) ?? "(계획 파일 없음)";
     const reports = card.reports.map((report) => `- **${STAGE_LABELS[report.stage]}${report.role ? ` · ${report.role}` : ""}** ${report.status}: ${report.summary.split("\n")[0]}`).join("\n");
     const body = [card.detail ? `${card.detail}\n` : null, "## 계획", plan.trim(), "", "## 단계 보고", reports, "", "_Paseo 투두 보드가 만든 초안 PR_"].filter((line) => line !== null).join("\n");
     return createDraftPr(cwd, card.title, body);

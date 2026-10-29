@@ -60,20 +60,22 @@ async function setup(overrides: Partial<ReturnType<typeof boardSettings.schema.p
   await store.load();
   const inboxDir = join(dir, "inbox");
   await mkdir(inboxDir, { recursive: true });
+  const plansDir = join(dir, "plans");
   const fake = fakePaseo();
   const runner = new Runner({
     store,
     inboxDir,
+    plansDir,
     settings: () => ({ ...boardSettings.schema.parse({}), ...overrides }),
     mcp: (env) => ({ type: "stdio", command: "node", args: ["mcp.mjs"], env, alwaysLoad: true }),
   });
   const report = (cardId: string, agentId: string, status: string, summary: string, stage?: string) =>
     writeFile(join(inboxDir, `${Date.now()}-${Math.random()}.json`), JSON.stringify({ kind: "report", cardId, agentId, stage, status, summary }));
-  return { dir, store, runner, inboxDir, report, attach: () => runner.attach(fake.paseo), ...fake };
+  return { dir, store, runner, inboxDir, plansDir, report, attach: () => runner.attach(fake.paseo), ...fake };
 }
 
 test("start creates the worker with a chosen id and a card-bound MCP server; the plan turn may use its own mode", async () => {
-  const { runner, store, created, sent, report, attach, dir } = await setup({ planMode: "plan", useWorktree: false });
+  const { runner, store, created, sent, report, attach, dir, plansDir } = await setup({ planMode: "plan", useWorktree: false });
   attach();
   const card = await runner.add({ workspaceId: "w", cwd: dir, title: "기능 A" });
   let current = (await runner.start(card.id))!;
@@ -92,8 +94,9 @@ test("start creates the worker with a chosen id and a card-bound MCP server; the
   assert.equal(sent.at(-1)?.agentId, current.agentId);
   assert.equal(sent.at(-1)?.options.sessionMode, "auto");
   assert.match(sent.at(-1)!.text, /현재 단계: 구현/);
-  // Plan mode cannot write files, so the report became the plan file.
-  assert.match(await readFile(join(dir, "docs/plans", `todo-${card.id.slice(0, 8)}.md`), "utf8"), /기능 A[\s\S]*1\. 파일 수정/);
+  // Plan mode cannot write files, so the report became the plan file, outside the repository, and the next prompt carries it.
+  assert.match(await readFile(join(plansDir, `todo-${card.id.slice(0, 8)}.md`), "utf8"), /기능 A[\s\S]*1\. 파일 수정/);
+  assert.match(sent.at(-1)!.text, /<plan>[\s\S]*1\. 파일 수정[\s\S]*<\/plan>/);
 });
 
 test("review fans out one session per enabled role; the card moves once every member has reported", async () => {
@@ -229,7 +232,7 @@ test("a non-git directory works in place: no worktree, one card at a time", asyn
 });
 
 test("in plan mode the plan is the last message: it becomes the plan file and moves the card; BLOCKED: blocks it", async () => {
-  const { runner, store, attach, lastText, dir } = await setup({ useWorktree: false });
+  const { runner, store, attach, lastText, dir, plansDir } = await setup({ useWorktree: false });
   attach();
   const card = await runner.add({ workspaceId: "w", cwd: dir, title: "메시지 계획" });
   const started = (await runner.start(card.id))!;
@@ -238,7 +241,7 @@ test("in plan mode the plan is the last message: it becomes the plan file and mo
   let current = store.get(card.id)!;
   assert.equal(current.stage, "implement");
   assert.equal(current.reports[0]?.summary, lastText.value);
-  assert.match(await readFile(join(dir, "docs/plans", `todo-${card.id.slice(0, 8)}.md`), "utf8"), /1\. a\.ts 수정/);
+  assert.match(await readFile(join(plansDir, `todo-${card.id.slice(0, 8)}.md`), "utf8"), /1\. a\.ts 수정/);
 
   const other = await runner.add({ workspaceId: "w", cwd: "/elsewhere", title: "질문" });
   const otherStarted = (await runner.start(other.id))!;

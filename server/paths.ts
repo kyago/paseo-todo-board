@@ -12,3 +12,4 @@ export const dataDir = () => join(paseoHome(), "plugin-data", "todo-board");
 export const boardFile = () => join(dataDir(), "board.json");
 export const inboxDir = () => join(dataDir(), "inbox");
 export const mcpScriptFile = () => join(dataDir(), "mcp.mjs");
+export const plansDir = () => join(dataDir(), "plans");
