@@ -108,6 +108,7 @@ export class Runner {
     const workspace = await this.api().workspaces.create({
       source: { kind: "worktree", cwd: card.cwd, action: "branch-off", branchName: branch },
       title: `[투두] ${card.title}`,
+      background: this.settings.hideWorkspace,
     });
     const directory = workspace.directory ?? (await workspace.refresh())?.workspaceDirectory ?? null;
     if (!directory) throw new Error("워크스페이스 디렉터리를 알 수 없습니다.");
@@ -183,7 +184,13 @@ export class Runner {
     if (latest) {
       if (card.stage === "plan" && latest.status === "done") await this.ensurePlanFile(card, latest.summary);
       const step = applyReport(card, latest, this.settings, agentId);
-      await this.commit(step.card, step.effect);
+      const after = await this.commit(step.card, step.effect);
+      // A team member is done once it has reported; it goes away at once instead of waiting for the card to complete.
+      if (this.settings.autoArchive && card.reviewers.some((reviewer) => reviewer.agentId === agentId)) {
+        await this.archiveSessions([agentId]);
+        const current = this.store.get(after.id);
+        if (current) await this.store.upsert({ ...current, sessionIds: current.sessionIds.filter((id) => id !== agentId) });
+      }
       return;
     }
     await this.store.upsert(applyTurnEnded(card, outcome, await this.lastText(agentId), agentId));

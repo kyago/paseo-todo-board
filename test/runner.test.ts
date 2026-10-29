@@ -100,7 +100,7 @@ test("start creates the worker with a chosen id and a card-bound MCP server; the
 });
 
 test("review fans out one session per enabled role; the card moves once every member has reported", async () => {
-  const { runner, store, created, sent, report, attach } = await setup({ reviewRoles: "security,simplicity", qaRoles: "qa-run" });
+  const { runner, store, created, sent, report, attach, archived } = await setup({ reviewRoles: "security,simplicity", qaRoles: "qa-run" });
   attach();
   const card = await runner.add({ workspaceId: "w", cwd: "/x", title: "B" });
   await runner.start(card.id);
@@ -127,6 +127,10 @@ test("review fans out one session per enabled role; the card moves once every me
   assert.equal(current.stage, "review");
   assert.equal(current.reviewers.find((r) => r.agentId === security)?.status, "done");
   assert.equal(current.reviewers.find((r) => r.agentId === simplicity)?.status, null);
+  // A member that has reported is archived right away and no longer waits for completion.
+  assert.deepEqual(archived, [security]);
+  assert.equal(current.sessionIds.includes(security), false);
+  assert.equal(current.sessionIds.includes(simplicity), true);
   await runner.onTurnEnded(simplicity, { kind: "completed" });
   current = store.get(card.id)!;
   assert.equal(current.stage, "implement");
@@ -210,12 +214,21 @@ test("a git directory gets a worktree workspace on todo/<id>, and sessions are c
   assert.equal(started.workCwd, repo);
   assert.equal(started.baseRef?.length, 40);
   assert.deepEqual(workspacesCreated[0].source, { kind: "worktree", cwd: repo, action: "branch-off", branchName: started.branch });
+  assert.equal(workspacesCreated[0].background, true);
   assert.equal(created[0].workspaceId, "wks-1");
   assert.equal(created[0].cwd, undefined);
   assert.deepEqual(started.sessionIds, [started.agentId]);
   // Two worktree cards in one directory run side by side.
   const second = await runner.add({ workspaceId: "w", cwd: repo, title: "둘째" });
   assert.equal((await runner.start(second.id))!.stage, "plan");
+});
+
+test("hideWorkspace=false makes a visible worktree workspace", async () => {
+  const { runner, workspacesCreated, attach } = await setup({ hideWorkspace: false });
+  attach();
+  const card = await runner.add({ workspaceId: "w", cwd: await gitDir(), title: "보이게" });
+  await runner.start(card.id);
+  assert.equal(workspacesCreated[0].background, false);
 });
 
 test("a non-git directory works in place: no worktree, one card at a time", async () => {

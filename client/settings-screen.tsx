@@ -41,6 +41,12 @@ export function BoardSettingsScreen() {
           onValueChange={(useWorktree) => save({ useWorktree })}
         />
         <SettingsSwitch
+          label="카드 세션 숨기기"
+          hint="카드의 worktree 워크스페이스를 백그라운드로 만들어 세션들이 사이드바에 나오지 않게 합니다. 사이드바의 'Show background'로 볼 수 있습니다. git 저장소가 아닌 디렉터리에는 적용되지 않습니다."
+          value={values.hideWorkspace}
+          onValueChange={(hideWorkspace) => save({ hideWorkspace })}
+        />
+        <SettingsSwitch
           label="완료 시 초안 PR 생성"
           hint="품질 검증 통과 후 커밋·푸시하고 gh로 draft PR을 엽니다(본문: 계획 + 단계 보고). origin이나 gh가 없으면 카드에 사유를 띄웁니다."
           value={values.createPr}

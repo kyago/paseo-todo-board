@@ -22,6 +22,8 @@ export const boardSettings = defineSettings({
     planMode: z.string().default("plan"),
     // Each card works on its own branch in a Paseo worktree (`todo/<id>`); off means in place, one card at a time per directory.
     useWorktree: z.boolean().default(true),
+    // Create each card's worktree workspace as a background workspace: its sessions stay out of the sidebar (Show background reveals them).
+    hideWorkspace: z.boolean().default(true),
     // After QA passes: commit, push the branch and open a draft pull request with the plan and the reports.
     createPr: z.boolean().default(true),
     // After completion: archive the card's sessions, and its worktree workspace once the PR exists.
