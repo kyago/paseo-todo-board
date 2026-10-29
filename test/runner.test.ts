@@ -279,6 +279,23 @@ test("finishing archives every session of the card; the worktree stays when no P
   assert.equal(done.prUrl, null);
 });
 
+test("without an origin the work is still committed on the branch and the card says why there is no PR", async () => {
+  const { runner, store, attach } = await setup({ useWorktree: false, createPr: true, autoArchive: false });
+  attach();
+  const repo = await gitDir();
+  await exec("git", ["-c", "user.email=t@e", "-c", "user.name=t", "checkout", "-q", "-b", "todo/x"], { cwd: repo });
+  await writeFile(join(repo, "new.txt"), "x\n");
+  const card = await runner.add({ workspaceId: "w", cwd: repo, title: "원격 없음" });
+  await store.upsert({ ...store.get(card.id)!, workCwd: repo, branch: "todo/x" });
+  await runner.action(card.id, "complete");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const done = store.get(card.id)!;
+  assert.match(done.attention ?? "", /origin 원격이 없습니다/);
+  assert.equal(done.prUrl, null);
+  const log = await exec("git", ["log", "--oneline"], { cwd: repo });
+  assert.match(log.stdout, /\[투두\] 원격 없음/);
+});
+
 test("only the board's own MCP tool prompts are recognised", () => {
   assert.equal(isBoardToolRequest({ name: "CodexMcpElicitation", title: "MCP approval: todo-board", metadata: { serverName: "todo-board" } }), true);
   assert.equal(isBoardToolRequest({ name: "mcp__todo-board__todo_report" }), true);

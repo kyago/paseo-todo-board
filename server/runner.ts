@@ -357,8 +357,9 @@ export class Runner {
 
   private async openPr(card: Card): Promise<string> {
     const cwd = card.workCwd!;
-    if (!(await hasRemote(cwd))) throw new Error("origin 원격이 없습니다.");
+    // The work is committed on the card's branch even when it cannot be pushed.
     await commitAll(cwd, `[투두] ${card.title}`);
+    if (!(await hasRemote(cwd))) throw new Error("origin 원격이 없습니다. 커밋은 브랜치에 남겼습니다.");
     await pushBranch(cwd, card.branch!);
     const plan = await readFile(join(cwd, planFile(card)), "utf8").catch(() => "(계획 파일 없음)");
     const reports = card.reports.map((report) => `- **${STAGE_LABELS[report.stage]}${report.role ? ` · ${report.role}` : ""}** ${report.status}: ${report.summary.split("\n")[0]}`).join("\n");
