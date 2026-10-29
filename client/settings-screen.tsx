@@ -34,6 +34,24 @@ export function BoardSettingsScreen() {
           value={values.injectTools}
           onValueChange={(injectTools) => save({ injectTools })}
         />
+        <SettingsSwitch
+          label="카드마다 worktree 사용"
+          hint="시작할 때 Paseo worktree 워크스페이스를 만들어 todo/아이디 브랜치에서 작업합니다. 끄면 디렉터리에서 직접 작업하고 한 번에 한 카드만 돕니다."
+          value={values.useWorktree}
+          onValueChange={(useWorktree) => save({ useWorktree })}
+        />
+        <SettingsSwitch
+          label="완료 시 초안 PR 생성"
+          hint="품질 검증 통과 후 커밋·푸시하고 gh로 draft PR을 엽니다(본문: 계획 + 단계 보고). origin이나 gh가 없으면 카드에 사유를 띄웁니다."
+          value={values.createPr}
+          onValueChange={(createPr) => save({ createPr })}
+        />
+        <SettingsSwitch
+          label="완료 시 세션 정리"
+          hint="카드가 만든 세션을 아카이브하고, PR이 만들어졌으면 worktree 워크스페이스도 아카이브합니다."
+          value={values.autoArchive}
+          onValueChange={(autoArchive) => save({ autoArchive })}
+        />
         <SettingsInput
           label="반려 재시도 상한"
           hint="검토·품질 검증이 이 횟수를 넘겨 반려하면 '확인 필요'로 멈춥니다. 0~5."
@@ -59,9 +77,9 @@ export function BoardSettingsScreen() {
         />
         <SettingsInput
           label="계획 단계 모드"
-          hint="계획 턴에만 쓰는 모드. 비우면 작업 세션 모드와 같음. claude의 plan은 파일을 못 쓰므로 보고 내용을 보드가 계획 파일로 저장합니다."
+          hint="계획 턴에만 쓰는 모드(기본 plan). plan이면 세션이 파일·도구를 못 쓰므로 마지막 메시지를 계획으로 받아 보드가 계획 파일로 저장합니다. 비우면 작업 세션 모드와 같습니다."
           initialValue={values.planMode}
-          placeholder="(작업 세션 모드와 같음)"
+          placeholder="plan"
           onChangeText={(text) => text.trim() !== values.planMode && save({ planMode: text.trim() })}
         />
         <SettingsInput

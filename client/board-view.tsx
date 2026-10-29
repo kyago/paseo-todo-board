@@ -1,4 +1,5 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
+import { ExternalLink } from "@getpaseo/plugin/client/ui";
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { type Card, type CardAction, type ReportStatus, STAGE_LABELS, STAGES } from "../shared/board";
@@ -63,6 +64,7 @@ const makeStyles = (theme: PluginTheme, compact: boolean) => ({
   meta: { color: theme.colors.foregroundMuted, fontSize: 12 },
   report: { color: theme.colors.foreground, fontSize: 12 },
   attention: { color: theme.colors.statusDanger, fontSize: 12 },
+  link: { color: theme.colors.accent, fontSize: 12, textDecorationLine: "underline" as const },
   actions: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 6, marginTop: 2 },
   button: { backgroundColor: theme.colors.surface2, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 5 },
   buttonText: { color: theme.colors.foreground, fontSize: 12 },
@@ -134,6 +136,12 @@ export function BoardView({ theme, compact, cards, onAdd, onAction, showFolder, 
                       {mark.text}
                       {card.retries > 0 ? ` · 반려 ${card.retries}회` : ""}
                     </Text>
+                    {card.branch ? <Text style={styles.meta}>⎇ {card.branch}</Text> : null}
+                    {card.prUrl ? (
+                      <ExternalLink href={card.prUrl} accessibilityLabel={`${card.title} PR 열기`}>
+                        <Text style={styles.link}>PR 열기</Text>
+                      </ExternalLink>
+                    ) : null}
                     {card.attention ? <Text style={styles.attention}>{card.attention}</Text> : null}
                     {card.reviewers.map((reviewer) => (
                       <Text key={reviewer.agentId} style={styles.meta}>

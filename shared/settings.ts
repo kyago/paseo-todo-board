@@ -18,8 +18,14 @@ export const boardSettings = defineSettings({
     reviewerProvider: z.string().min(1).default("codex"),
     // Permission mode id given to every session the board creates (claude: auto, acceptEdits, bypassPermissions; codex: auto, full-access).
     workerMode: z.string().default("auto"),
-    // Mode for the planning turn only; empty means workerMode. Claude's `plan` mode cannot write the plan file, so the board writes it from the report.
-    planMode: z.string().default(""),
+    // Mode for the planning turn only; empty means workerMode. With `plan` the session cannot write or call tools, so the plan is the turn's last message and the board saves it as the plan file.
+    planMode: z.string().default("plan"),
+    // Each card works on its own branch in a Paseo worktree (`todo/<id>`); off means in place, one card at a time per directory.
+    useWorktree: z.boolean().default(true),
+    // After QA passes: commit, push the branch and open a draft pull request with the plan and the reports.
+    createPr: z.boolean().default(true),
+    // After completion: archive the card's sessions, and its worktree workspace once the PR exists.
+    autoArchive: z.boolean().default(true),
     reviewerMode: z.string().default("full-access"),
     // Comma-separated role ids from shared/roles.ts; an empty or unknown list means every role of that stage.
     reviewRoles: z.string().default("correctness,security,tests,simplicity"),

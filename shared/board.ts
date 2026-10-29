@@ -63,6 +63,13 @@ export const CardSchema = z.object({
   reviewers: z.array(ReviewerSchema).default([]),
   /** `git rev-parse HEAD` when work started; null outside a git repository. */
   baseRef: z.string().nullable().default(null),
+  /** Where the sessions work: the card's worktree, or cwd itself when worktrees are off or cwd is not a git repository. */
+  workCwd: z.string().nullable().default(null),
+  workWorkspaceId: z.string().nullable().default(null),
+  branch: z.string().nullable().default(null),
+  /** Every session the board created for this card; archived when the card completes. */
+  sessionIds: z.array(z.string()).default([]),
+  prUrl: z.string().nullable().default(null),
   retries: z.number().int().default(0),
   reports: z.array(ReportSchema).default([]),
   createdAt: z.string(),

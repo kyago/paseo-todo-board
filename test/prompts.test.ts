@@ -23,9 +23,9 @@ test("the plan file is derived from the card id and reused by later stages", () 
 
 test("review diffs against the base ref when there is one, else reads the whole tree", () => {
   const correctness = ROLES.find((role) => role.id === "correctness")!;
-  assert.match(stagePrompt(card, "review", undefined, correctness), /git diff deadbeef/);
-  assert.match(stagePrompt({ ...card, baseRef: null }, "review", undefined, correctness), /변경 파일 전체/);
-  assert.match(stagePrompt(card, "review", undefined, correctness), /역할: 정확성·회귀[\s\S]*todo_report/);
+  assert.match(stagePrompt(card, "review", { role: correctness }), /git diff deadbeef/);
+  assert.match(stagePrompt({ ...card, baseRef: null }, "review", { role: correctness }), /변경 파일 전체/);
+  assert.match(stagePrompt(card, "review", { role: correctness }), /역할: 정확성·회귀[\s\S]*todo_report/);
 });
 
 test("roles are selected by id per stage and fall back to the whole team", () => {
@@ -37,6 +37,15 @@ test("roles are selected by id per stage and fall back to the whole team", () =>
 });
 
 test("a rejection reason is appended to the implementation prompt", () => {
-  assert.match(stagePrompt(card, "implement", "테스트 누락"), /반려 사유[\s\S]*테스트 누락/);
+  assert.match(stagePrompt(card, "implement", { extra: "테스트 누락" }), /반려 사유[\s\S]*테스트 누락/);
   assert.doesNotMatch(stagePrompt(card, "implement"), /반려 사유/);
+});
+
+test("a message-mode plan prompt asks for the plan as the last message and forbids tools and plan approval", () => {
+  const text = stagePrompt(card, "plan", { planViaMessage: true });
+  assert.match(text, /마지막 메시지/);
+  assert.match(text, /ExitPlanMode/);
+  assert.match(text, /BLOCKED:/);
+  assert.doesNotMatch(text, /반드시 MCP 도구/);
+  assert.match(stagePrompt(card, "plan"), /반드시 MCP 도구 `todo_report`/);
 });

@@ -83,9 +83,14 @@ export default function contribute(server: PluginServerContext) {
       runner.attach(paseo);
       await runner.onTurnEnded(agent.id, outcome);
     }),
-    server.on("agent.permission_requested", async ({ agent }, { paseo }) => {
+    server.on("agent.permission_requested", async ({ agent, request }, { paseo }) => {
       await ready;
       runner.attach(paseo);
+      const deny = runner.permissionDecision(agent.id, request);
+      if (deny) {
+        await paseo.agents.ref(agent.id).respondToPermission({ requestId: request.id, response: { behavior: "deny", message: deny } });
+        return;
+      }
       await runner.onPermission(agent.id, true);
     }),
     server.on("agent.permission_resolved", async ({ agent }, { paseo }) => {
