@@ -1,6 +1,9 @@
 import { useSettings } from "@getpaseo/plugin/client";
 import { SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSwitch } from "@getpaseo/plugin/client/ui";
+import { ROLES } from "../shared/roles";
 import { type BoardSettingsValues, boardSettings } from "../shared/settings";
+
+const roleList = (stage: "review" | "qa") => ROLES.filter((role) => role.stage === stage).map((role) => `${role.id}(${role.label})`).join(", ");
 
 export function BoardSettingsScreen() {
   const settings = useSettings(boardSettings);
@@ -55,6 +58,13 @@ export function BoardSettingsScreen() {
           onChangeText={(text) => text.trim() !== values.workerMode && save({ workerMode: text.trim() })}
         />
         <SettingsInput
+          label="계획 단계 모드"
+          hint="계획 턴에만 쓰는 모드. 비우면 작업 세션 모드와 같음. claude의 plan은 파일을 못 쓰므로 보고 내용을 보드가 계획 파일로 저장합니다."
+          initialValue={values.planMode}
+          placeholder="(작업 세션 모드와 같음)"
+          onChangeText={(text) => text.trim() !== values.planMode && save({ planMode: text.trim() })}
+        />
+        <SettingsInput
           label="검토 세션 (검토·품질 검증)"
           hint="구현과 다른 모델을 권장합니다. 예: codex, codex/gpt-5.5"
           initialValue={values.reviewerProvider}
@@ -62,8 +72,23 @@ export function BoardSettingsScreen() {
         />
         <SettingsInput
           label="검토 세션 권한 모드"
+          hint="codex: auto, auto-review, full-access(기본, 보고 도구 승인 프롬프트 없음) / claude: auto, bypassPermissions."
           initialValue={values.reviewerMode}
           onChangeText={(text) => text.trim() !== values.reviewerMode && save({ reviewerMode: text.trim() })}
+        />
+      </SettingsCard>
+      <SettingsCard>
+        <SettingsInput
+          label="검토 팀 역할"
+          hint={`쉼표로 구분. 비우면 전원. 가능: ${roleList("review")}`}
+          initialValue={values.reviewRoles}
+          onChangeText={(text) => text.trim() !== values.reviewRoles && save({ reviewRoles: text.trim() })}
+        />
+        <SettingsInput
+          label="품질 검증 팀 역할"
+          hint={`쉼표로 구분. 비우면 전원. 가능: ${roleList("qa")}`}
+          initialValue={values.qaRoles}
+          onChangeText={(text) => text.trim() !== values.qaRoles && save({ qaRoles: text.trim() })}
         />
       </SettingsCard>
     </SettingsSection>

@@ -12,6 +12,7 @@ import { join } from "node:path";
 const inbox = process.env.TODO_INBOX;
 const cardId = process.env.TODO_CARD_ID || null;
 const stage = process.env.TODO_STAGE || null;
+const agentId = process.env.TODO_AGENT_ID || null;
 const cwd = process.env.TODO_CWD || process.cwd();
 
 const tools = [
@@ -58,7 +59,7 @@ function call(name, args) {
   if (!inbox) return { text: "TODO_INBOX가 없어 보고할 수 없습니다.", isError: true };
   if (name === "todo_report") {
     if (!cardId) return { text: "이 세션은 보드 카드에 연결되어 있지 않습니다. 보고는 보드가 만든 세션에서만 가능합니다.", isError: true };
-    drop({ kind: "report", cardId, stage: stage ?? undefined, status: args.status, summary: String(args.summary ?? "") });
+    drop({ kind: "report", cardId, agentId: agentId ?? undefined, stage: stage ?? undefined, status: args.status, summary: String(args.summary ?? "") });
     return { text: "보고했습니다 (" + args.status + "). 이제 턴을 마치세요." };
   }
   if (name === "todo_add") {

@@ -1,7 +1,7 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { type Card, type CardAction, STAGE_LABELS, STAGES } from "../shared/board";
+import { type Card, type CardAction, type ReportStatus, STAGE_LABELS, STAGES } from "../shared/board";
 
 export type PluginTheme = PluginScreenProps["theme"];
 type Colors = PluginTheme["colors"];
@@ -16,6 +16,10 @@ function badge(card: Card, colors: Colors): { text: string; color: string } {
   if (card.paused) return { text: "일시정지", color: colors.foregroundMuted };
   return { text: card.stage === "todo" ? "" : "대기", color: colors.foregroundMuted };
 }
+
+const statusColor = (status: ReportStatus | null, colors: Colors) =>
+  status === "done" ? colors.statusSuccess : status === "fail" ? colors.statusDanger : status === "blocked" ? colors.statusWarning : colors.foregroundMuted;
+const statusText = (status: ReportStatus | null) => (status === "done" ? "통과" : status === "fail" ? "반려" : status === "blocked" ? "중단" : "진행 중");
 
 function actionsFor(card: Card): { label: string; action: CardAction }[] {
   if (card.stage === "todo") return [{ label: "시작 → 계획", action: "start" }, { label: "삭제", action: "delete" }];
@@ -131,9 +135,14 @@ export function BoardView({ theme, compact, cards, onAdd, onAction, showFolder, 
                       {card.retries > 0 ? ` · 반려 ${card.retries}회` : ""}
                     </Text>
                     {card.attention ? <Text style={styles.attention}>{card.attention}</Text> : null}
+                    {card.reviewers.map((reviewer) => (
+                      <Text key={reviewer.agentId} style={styles.meta}>
+                        {reviewer.label}: <Text style={{ color: statusColor(reviewer.status, theme.colors) }}>{statusText(reviewer.status)}</Text>
+                      </Text>
+                    ))}
                     {last ? (
                       <Text style={styles.report} numberOfLines={4}>
-                        [{STAGE_LABELS[last.stage]} {last.status}] {last.summary}
+                        [{STAGE_LABELS[last.stage]}{last.role ? ` · ${last.role}` : ""} {statusText(last.status)}] {last.summary}
                       </Text>
                     ) : null}
                     <View style={styles.actions}>

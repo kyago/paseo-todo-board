@@ -18,7 +18,12 @@ export const boardSettings = defineSettings({
     reviewerProvider: z.string().min(1).default("codex"),
     // Permission mode id given to every session the board creates (claude: auto, acceptEdits, bypassPermissions; codex: auto, full-access).
     workerMode: z.string().default("auto"),
-    reviewerMode: z.string().default("auto"),
+    // Mode for the planning turn only; empty means workerMode. Claude's `plan` mode cannot write the plan file, so the board writes it from the report.
+    planMode: z.string().default(""),
+    reviewerMode: z.string().default("full-access"),
+    // Comma-separated role ids from shared/roles.ts; an empty or unknown list means every role of that stage.
+    reviewRoles: z.string().default("correctness,security,tests,simplicity"),
+    qaRoles: z.string().default("qa-run,qa-acceptance"),
   }),
 });
 

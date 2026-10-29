@@ -25,8 +25,20 @@ export const ReportSchema = z.object({
   status: ReportStatusSchema,
   summary: z.string(),
   at: z.string(),
+  /** Team member label for review and QA reports. */
+  role: z.string().optional(),
 });
 export type Report = z.infer<typeof ReportSchema>;
+
+/** One member of the review or QA team working on the current stage. */
+export const ReviewerSchema = z.object({
+  agentId: z.string(),
+  role: z.string(),
+  label: z.string(),
+  status: ReportStatusSchema.nullable().default(null),
+  summary: z.string().nullable().default(null),
+});
+export type Reviewer = z.infer<typeof ReviewerSchema>;
 
 export const CardStateSchema = z.enum(["idle", "running", "blocked", "needs_human"]);
 export type CardState = z.infer<typeof CardStateSchema>;
@@ -47,8 +59,8 @@ export const CardSchema = z.object({
   attention: z.string().nullable().default(null),
   /** Session that plans and implements. */
   agentId: z.string().nullable().default(null),
-  /** Session that reviews or verifies the current stage. */
-  reviewerId: z.string().nullable().default(null),
+  /** The team on the current review or QA stage; empty on other stages. */
+  reviewers: z.array(ReviewerSchema).default([]),
   /** `git rev-parse HEAD` when work started; null outside a git repository. */
   baseRef: z.string().nullable().default(null),
   retries: z.number().int().default(0),
@@ -63,6 +75,8 @@ export const InboxMessageSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("report"),
     cardId: z.string(),
+    /** The reporting session, when the MCP server knows it; lets team reports be told apart. */
+    agentId: z.string().optional(),
     /** Set for reviewer sessions (one per stage); the worker session's report applies to the card's current stage. */
     stage: StageSchema.optional(),
     status: ReportStatusSchema,

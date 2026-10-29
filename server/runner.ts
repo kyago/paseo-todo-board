@@ -1,11 +1,15 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
-import { type AgentStage, type Card, type CardAction, type InboxMessage, STAGE_LABELS } from "../shared/board.ts";
-import { stagePrompt } from "../shared/prompts.ts";
+import { type Card, type CardAction, type InboxMessage, STAGE_LABELS } from "../shared/board.ts";
+import { planFile, stagePrompt } from "../shared/prompts.ts";
+import { rolesFor } from "../shared/roles.ts";
 import type { BoardSettingsValues } from "../shared/settings.ts";
 import { consume, readInbox } from "./inbox.ts";
-import { type Effect, type TurnOutcome, advance, applyReport, applyTurnEnded, newCard, rejectToImplement, retryStage, start } from "./machine.ts";
+import { type Effect, type TurnOutcome, advance, applyReport, applyTurnEnded, newCard, rejectToImplement, responsibleAgents, retryStage, start } from "./machine.ts";
 import type { StdioMcpServer } from "./mcp.ts";
 import type { BoardStore } from "./store.ts";
 
@@ -28,9 +32,9 @@ async function gitHead(cwd: string): Promise<string | null> {
   }
 }
 
-/** Which session the card is waiting on right now. Chat in the other one must not move the card. */
-export const responsibleAgent = (card: Card): string | null =>
-  card.stage === "plan" || card.stage === "implement" ? card.agentId : card.stage === "review" || card.stage === "qa" ? card.reviewerId : null;
+/** Permission prompts for the board's own MCP tools (Codex asks per MCP server; Claude names them mcp__<server>__<tool>). */
+export const isBoardToolRequest = (request: { name: string; title?: string; metadata?: Record<string, unknown> }): boolean =>
+  request.metadata?.serverName === "todo-board" || request.name.startsWith("mcp__todo-board__") || /todo-board/i.test(request.title ?? "");
 
 export class Runner {
   private paseo: Paseo | null = null;
@@ -98,7 +102,7 @@ export class Runner {
         return this.commit(step.card, step.effect);
       }
       case "complete": {
-        const done = await this.store.upsert({ ...card, stage: "done", state: "idle", queued: false, attention: null, updatedAt: at });
+        const done = await this.store.upsert({ ...card, stage: "done", state: "idle", reviewers: [], queued: false, attention: null, updatedAt: at });
         await this.releaseQueue(card.cwd);
         return done;
       }
@@ -113,10 +117,10 @@ export class Runner {
     }
   }
 
-  /** The agent responsible for the card ended a turn: apply its report, or block the card when there is none. */
+  /** A responsible session ended a turn: apply its report, or block the card when there is none. */
   async onTurnEnded(agentId: string, outcome: TurnOutcome): Promise<void> {
     const card = this.store.byAgent(agentId);
-    if (!card || responsibleAgent(card) !== agentId || card.state !== "running") {
+    if (!card || !responsibleAgents(card).includes(agentId) || card.state !== "running") {
       await this.processInbox();
       return;
     }
@@ -126,6 +130,8 @@ export class Runner {
       const { message } = entry;
       if (message.kind === "report") {
         if (message.cardId !== card.id) continue;
+        // Team members report in parallel; only this session's report is consumed here.
+        if (card.reviewers.length > 0 && message.agentId && message.agentId !== agentId) continue;
         latest = message;
         await consume(entry);
       } else {
@@ -135,17 +141,17 @@ export class Runner {
       }
     }
     if (latest) {
-      const step = applyReport(card, { stage: latest.stage ?? card.stage, status: latest.status, summary: latest.summary }, this.deps.settings());
+      if (card.stage === "plan" && latest.status === "done") await this.ensurePlanFile(card, latest.summary);
+      const step = applyReport(card, { stage: latest.stage ?? card.stage, status: latest.status, summary: latest.summary }, this.deps.settings(), agentId);
       await this.commit(step.card, step.effect);
       return;
     }
-    const blocked = applyTurnEnded(card, outcome, await this.lastText(agentId));
-    await this.store.upsert(blocked);
+    await this.store.upsert(applyTurnEnded(card, outcome, await this.lastText(agentId), agentId));
   }
 
   async onPermission(agentId: string, pending: boolean): Promise<void> {
     const card = this.store.byAgent(agentId);
-    if (!card || responsibleAgent(card) !== agentId) return;
+    if (!card || !responsibleAgents(card).includes(agentId)) return;
     const attention = pending ? "권한 요청 대기" : card.attention === "권한 요청 대기" ? null : card.attention;
     if (attention !== card.attention) await this.store.upsert({ ...card, attention, updatedAt: new Date().toISOString() });
   }
@@ -184,6 +190,17 @@ export class Runner {
     }
   }
 
+  /** A planning turn in Claude's plan mode cannot write files, so the plan text in the report becomes the plan file. */
+  private async ensurePlanFile(card: Card, summary: string): Promise<void> {
+    const file = join(card.cwd, planFile(card));
+    try {
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, `# ${card.title}\n\n${summary}\n`, { flag: "wx" });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") console.error("[todo-board] plan file", error);
+    }
+  }
+
   /** The SDK wants `provider/model`; a bare provider name takes that provider's default model. */
   private async resolveProvider(value: string): Promise<string> {
     const trimmed = value.trim();
@@ -211,15 +228,19 @@ export class Runner {
     switch (effect.kind) {
       case "send": {
         const prompt = stagePrompt(card, effect.stage, effect.extra);
+        const mode = (effect.stage === "plan" ? settings.planMode || settings.workerMode : settings.workerMode) || undefined;
         if (card.agentId) {
-          await this.api().agents.ref(card.agentId).send(prompt);
+          await this.api().agents.ref(card.agentId).send(prompt, { sessionMode: mode });
           return card;
         }
+        // The session id is chosen up front so the MCP server can stamp reports with it.
+        const agentId = randomUUID();
         const agent = await this.api().agents.create({
+          agentId,
           config: {
             provider: await this.resolveProvider(settings.workerProvider),
-            modeId: settings.workerMode || undefined,
-            mcpServers: { "todo-board": this.deps.mcp({ TODO_CARD_ID: card.id, TODO_CWD: card.cwd }) },
+            modeId: mode,
+            mcpServers: { "todo-board": this.deps.mcp({ TODO_CARD_ID: card.id, TODO_AGENT_ID: agentId, TODO_CWD: card.cwd }) },
           },
           cwd: card.cwd,
           title: `[투두] ${card.title}`,
@@ -229,18 +250,26 @@ export class Runner {
         return { ...card, agentId: agent.id };
       }
       case "create": {
-        const agent = await this.api().agents.create({
-          config: {
-            provider: await this.resolveProvider(settings.reviewerProvider),
-            modeId: settings.reviewerMode || undefined,
-            mcpServers: { "todo-board": this.deps.mcp({ TODO_CARD_ID: card.id, TODO_STAGE: effect.stage, TODO_CWD: card.cwd }) },
-          },
-          cwd: card.cwd,
-          title: `[투두 ${STAGE_LABELS[effect.stage satisfies AgentStage]}] ${card.title}`,
-          prompt: stagePrompt(card, effect.stage),
-          labels: { "todo-board/card": card.id, "todo-board/stage": effect.stage },
-        });
-        return { ...card, reviewerId: agent.id };
+        const provider = await this.resolveProvider(settings.reviewerProvider);
+        const roles = rolesFor(effect.stage, effect.stage === "review" ? settings.reviewRoles : settings.qaRoles);
+        const reviewers = [];
+        for (const role of roles) {
+          const agentId = randomUUID();
+          const agent = await this.api().agents.create({
+            agentId,
+            config: {
+              provider,
+              modeId: settings.reviewerMode || undefined,
+              mcpServers: { "todo-board": this.deps.mcp({ TODO_CARD_ID: card.id, TODO_AGENT_ID: agentId, TODO_STAGE: effect.stage, TODO_CWD: card.cwd }) },
+            },
+            cwd: card.cwd,
+            title: `[투두 ${STAGE_LABELS[effect.stage]} · ${role.label}] ${card.title}`,
+            prompt: stagePrompt(card, effect.stage, undefined, role),
+            labels: { "todo-board/card": card.id, "todo-board/stage": effect.stage, "todo-board/role": role.id },
+          });
+          reviewers.push({ agentId: agent.id, role: role.id, label: role.label, status: null, summary: null });
+        }
+        return { ...card, reviewers };
       }
       case "finished":
         await this.releaseQueue(card.cwd);
@@ -269,20 +298,21 @@ export class Runner {
     }
   }
 
-  /** Turn-end events are not replayed after a restart; a running card whose session is idle is treated as just ended. Queued cards get their turn. */
+  /** Turn-end events are not replayed after a restart; a running session that is idle is treated as just ended. Queued cards get their turn. */
   private async reconcile(): Promise<void> {
     await this.processInbox();
     for (const cwd of new Set(this.store.all().filter((card) => card.queued).map((card) => card.cwd))) await this.releaseQueue(cwd);
     for (const card of this.store.all()) {
       if (card.state !== "running") continue;
-      const agentId = responsibleAgent(card);
-      if (!agentId) continue;
-      try {
-        const handle = this.api().agents.ref(agentId);
-        await handle.refresh();
-        if (!handle.activeTurn) await this.onTurnEnded(agentId, { kind: "completed" });
-      } catch (error) {
-        await this.store.upsert({ ...card, state: "blocked", attention: `세션을 찾지 못함: ${(error as Error).message}`, updatedAt: new Date().toISOString() });
+      for (const agentId of responsibleAgents(card)) {
+        if (card.reviewers.find((reviewer) => reviewer.agentId === agentId)?.status) continue;
+        try {
+          const handle = this.api().agents.ref(agentId);
+          await handle.refresh();
+          if (!handle.activeTurn) await this.onTurnEnded(agentId, { kind: "completed" });
+        } catch (error) {
+          await this.store.upsert({ ...card, state: "blocked", attention: `세션을 찾지 못함: ${(error as Error).message}`, updatedAt: new Date().toISOString() });
+        }
       }
     }
   }

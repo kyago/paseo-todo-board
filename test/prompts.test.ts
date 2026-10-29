@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { planFile, stagePrompt } from "../shared/prompts.ts";
+import { ROLES, rolesFor } from "../shared/roles.ts";
 
 const card = { id: "abcdef12-3456", title: "로그인 버그 수정", detail: "세션 만료 시 500", baseRef: "deadbeef" };
 
 test("every stage prompt names the card, the stage and the report tool", () => {
-  for (const stage of ["plan", "implement", "review", "qa"] as const) {
+  for (const stage of ["plan", "implement"] as const) {
     const text = stagePrompt(card, stage);
     assert.match(text, /로그인 버그 수정/);
     assert.match(text, /todo_report/);
@@ -21,8 +22,18 @@ test("the plan file is derived from the card id and reused by later stages", () 
 });
 
 test("review diffs against the base ref when there is one, else reads the whole tree", () => {
-  assert.match(stagePrompt(card, "review"), /git diff deadbeef/);
-  assert.match(stagePrompt({ ...card, baseRef: null }, "review"), /변경 파일 전체/);
+  const correctness = ROLES.find((role) => role.id === "correctness")!;
+  assert.match(stagePrompt(card, "review", undefined, correctness), /git diff deadbeef/);
+  assert.match(stagePrompt({ ...card, baseRef: null }, "review", undefined, correctness), /변경 파일 전체/);
+  assert.match(stagePrompt(card, "review", undefined, correctness), /역할: 정확성·회귀[\s\S]*todo_report/);
+});
+
+test("roles are selected by id per stage and fall back to the whole team", () => {
+  assert.deepEqual(rolesFor("review", "simplicity, security").map((role) => role.id), ["security", "simplicity"]);
+  assert.deepEqual(rolesFor("review", "").map((role) => role.id), ["correctness", "security", "tests", "simplicity"]);
+  assert.deepEqual(rolesFor("qa", "nope").map((role) => role.id), ["qa-run", "qa-acceptance"]);
+  for (const role of ROLES) assert.match(role.prompt(card), /status=fail|status=done/);
+  assert.match(ROLES.find((role) => role.id === "simplicity")!.prompt(card), /Lean already\. Ship\./);
 });
 
 test("a rejection reason is appended to the implementation prompt", () => {

@@ -42,7 +42,7 @@ export class BoardStore {
   }
 
   byAgent(agentId: string): Card | undefined {
-    return this.cards.find((card) => card.agentId === agentId || card.reviewerId === agentId);
+    return this.cards.find((card) => card.agentId === agentId || card.reviewers.some((reviewer) => reviewer.agentId === agentId));
   }
 
   async upsert(card: Card): Promise<Card> {

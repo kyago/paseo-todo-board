@@ -38,7 +38,7 @@ test("the MCP server answers initialize and lists both tools", async () => {
 
 test("todo_report drops a report for the session's card and todo_add drops a new card", async () => {
   const inbox = await mkdtemp(join(tmpdir(), "inbox-"));
-  const [report, add] = await talk({ TODO_INBOX: inbox, TODO_CARD_ID: "card-1", TODO_STAGE: "review", TODO_CWD: "/proj" }, [
+  const [report, add] = await talk({ TODO_INBOX: inbox, TODO_CARD_ID: "card-1", TODO_AGENT_ID: "agent-9", TODO_STAGE: "review", TODO_CWD: "/proj" }, [
     { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "todo_report", arguments: { status: "fail", summary: "테스트 누락" } } },
     { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "todo_add", arguments: { title: "후속 작업" } } },
   ]);
@@ -47,7 +47,7 @@ test("todo_report drops a report for the session's card and todo_add drops a new
   const files = (await readdir(inbox)).filter((name) => name.endsWith(".json"));
   assert.equal(files.length, 2);
   const messages = await Promise.all(files.map(async (name) => JSON.parse(await readFile(join(inbox, name), "utf8"))));
-  assert.deepEqual(messages.find((m) => m.kind === "report"), { kind: "report", cardId: "card-1", stage: "review", status: "fail", summary: "테스트 누락" });
+  assert.deepEqual(messages.find((m) => m.kind === "report"), { kind: "report", cardId: "card-1", agentId: "agent-9", stage: "review", status: "fail", summary: "테스트 누락" });
   assert.deepEqual(messages.find((m) => m.kind === "add"), { kind: "add", cwd: "/proj", title: "후속 작업" });
 });
 
