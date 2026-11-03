@@ -3,7 +3,7 @@ import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type AgentToolDefinition, defineAgentTool } from "@getpaseo/plugin/server";
 import { z } from "zod";
-import { type InboxMessage, ReportStatusSchema, StageSchema } from "../shared/board.ts";
+import { CardTypeSchema, type InboxMessage, ReportStatusSchema, StageSchema } from "../shared/board.ts";
 
 export const CARD_LABEL = "todo-board/card";
 export const STAGE_LABEL = "todo-board/stage";
@@ -16,7 +16,7 @@ export function drop(inbox: string, message: InboxMessage): void {
   renameSync(`${file}.tmp`, file);
 }
 
-/** Tools for one session: every session can add and start cards; a session the board created (card label) also reports. */
+/** Tools for one session: every session can add, start and complete cards; a session the board created (card label) also reports. */
 export function boardTools(inbox: string, labels: Readonly<Record<string, string>>, cwd: string): AgentToolDefinition[] {
   const cardId = labels[CARD_LABEL];
   const stage = StageSchema.safeParse(labels[STAGE_LABEL]).data;
@@ -24,9 +24,13 @@ export function boardTools(inbox: string, labels: Readonly<Record<string, string
     defineAgentTool({
       name: "todo_add",
       description: "투두 보드의 '할 일'에 카드를 추가한다. 사용자가 할 일로 남겨 두자고 할 때 쓴다.",
-      input: z.object({ title: z.string().min(1), detail: z.string().optional().describe("맥락, 수용 기준 등 (선택)") }),
-      execute: ({ title, detail }) => {
-        drop(inbox, { kind: "add", cwd, title: title.trim(), detail });
+      input: z.object({
+        title: z.string().min(1),
+        detail: z.string().optional().describe("맥락, 수용 기준 등 (선택)"),
+        type: CardTypeSchema.optional().describe("doc: 코드를 바꾸지 않는 조사·문서 카드. 산출물 경로를 detail에 적는다. 기본 code."),
+      }),
+      execute: ({ title, detail, type }) => {
+        drop(inbox, { kind: "add", cwd, title: title.trim(), detail, type });
         return { text: `'할 일'에 추가했습니다: ${title}` };
       },
     }),
@@ -37,6 +41,15 @@ export function boardTools(inbox: string, labels: Readonly<Record<string, string
       execute: ({ query }) => {
         drop(inbox, { kind: "start", cwd, query: query.trim() });
         return { text: `시작을 요청했습니다: ${query}. 보드가 계획 세션을 만듭니다.` };
+      },
+    }),
+    defineAgentTool({
+      name: "todo_complete",
+      description: "투두 보드에서 진행 중이거나 멈춘 카드를 '완료'로 옮긴다. 사용자가 그 카드를 완료하라고 할 때만 쓴다.",
+      input: z.object({ query: z.string().min(1).describe("카드 제목의 일부 또는 카드 id 앞부분") }),
+      execute: ({ query }) => {
+        drop(inbox, { kind: "complete", cwd, query: query.trim() });
+        return { text: `완료를 요청했습니다: ${query}.` };
       },
     }),
   ];

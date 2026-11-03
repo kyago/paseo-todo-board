@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { stagePrompt } from "../shared/prompts.ts";
+import { priorRounds, stagePrompt } from "../shared/prompts.ts";
 import { ROLES, rolesFor } from "../shared/roles.ts";
 
 const card = { id: "abcdef12-3456", title: "로그인 버그 수정", detail: "세션 만료 시 500", baseRef: "deadbeef", planPath: "/data/plans/todo-abcdef12.md", plan: "1. 토큰 갱신\n2. 테스트" };
@@ -50,4 +50,51 @@ test("a message-mode plan prompt asks for the plan as the last message and forbi
   assert.match(text, /BLOCKED:/);
   assert.doesNotMatch(text, /반드시 MCP 도구/);
   assert.match(stagePrompt(card, "plan"), /반드시 MCP 도구 `todo_report`/);
+});
+
+test("rejection is limited to real problems, and the simplicity role never rejects", () => {
+  const roles = Object.fromEntries(ROLES.map((role) => [role.id, role.prompt(card)]));
+  assert.match(roles.correctness, /수용 기준이나 계획 위반, 사실 오류, 실제 결함이나 취약점만 status=fail/);
+  assert.match(roles.correctness, /개선 의견은 그 summary에 제안/);
+  assert.match(roles.tests, /테스트가 전혀 없으면 status=fail/);
+  assert.doesNotMatch(roles.simplicity, /status=fail/);
+  assert.match(roles.simplicity, /반려하지 않는다/);
+});
+
+test("a doc card runs only the roles that can judge it and its prompts point at the deliverable", () => {
+  const doc = { ...card, type: "doc" as const };
+  assert.deepEqual(rolesFor("review", "", "doc").map((role) => role.id), ["correctness"]);
+  assert.deepEqual(rolesFor("qa", "", "doc").map((role) => role.id), ["qa-acceptance"]);
+  assert.deepEqual(rolesFor("review", "security", "doc").map((role) => role.id), ["correctness"]);
+  const correctness = ROLES.find((role) => role.id === "correctness")!;
+  const acceptance = ROLES.find((role) => role.id === "qa-acceptance")!;
+  assert.match(correctness.prompt(doc), /카드 상세에 적힌 산출물을 직접 읽는다/);
+  assert.doesNotMatch(correctness.prompt(doc), /git diff/);
+  assert.doesNotMatch(acceptance.prompt(doc), /테스트가 없으면/);
+  assert.match(acceptance.prompt(card), /테스트가 없으면/);
+  assert.match(stagePrompt(doc, "implement"), /산출물을 만든다/);
+  assert.doesNotMatch(stagePrompt(doc, "implement"), /테스트를 실행/);
+});
+
+test("prior rounds keep rejections and the fixes that answered them, and only team prompts show them", () => {
+  const at = "2026-11-03T00:00:00Z";
+  const reports = [
+    { stage: "plan" as const, status: "done" as const, summary: "계획 본문", at },
+    { stage: "implement" as const, status: "done" as const, summary: "처음 구현", at },
+    { stage: "review" as const, status: "done" as const, summary: "문제 없음", at, role: "보안" },
+    { stage: "review" as const, status: "fail" as const, summary: "체크리스트를 지운다", at, role: "오버엔지니어링" },
+    { stage: "implement" as const, status: "done" as const, summary: "체크리스트 삭제", at },
+  ];
+  assert.equal(priorRounds(reports.slice(0, 3)), null);
+  const text = priorRounds(reports)!;
+  assert.match(text, /\[검토 · 오버엔지니어링\] fail: 체크리스트를 지운다/);
+  assert.match(text, /\[구현\] done: 체크리스트 삭제/);
+  assert.doesNotMatch(text, /계획 본문|처음 구현|문제 없음/);
+  assert.equal(priorRounds([{ stage: "review", status: "fail", summary: "가".repeat(2000), at }])!.length < 900, true);
+
+  const correctness = ROLES.find((role) => role.id === "correctness")!;
+  const again = { ...card, priorRounds: text };
+  assert.match(stagePrompt(again, "review", { role: correctness }), /뒤집지 않고[\s\S]*<prior>[\s\S]*체크리스트 삭제/);
+  assert.doesNotMatch(stagePrompt(again, "implement"), /<prior>/);
+  assert.doesNotMatch(stagePrompt(card, "review", { role: correctness }), /<prior>/);
 });

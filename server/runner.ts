@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
-import { type Card, type CardAction, type InboxMessage, STAGE_LABELS } from "../shared/board.ts";
-import { BLOCKED_MARKER, type PromptCard, stagePrompt } from "../shared/prompts.ts";
+import { type Card, type CardAction, type CardType, type InboxMessage, STAGE_LABELS } from "../shared/board.ts";
+import { BLOCKED_MARKER, type PromptCard, priorRounds, stagePrompt } from "../shared/prompts.ts";
 import { rolesFor } from "../shared/roles.ts";
 import type { BoardSettingsValues } from "../shared/settings.ts";
 import { commitAll, createDraftPr, gitHead, hasRemote, isGitRepo, pushBranch } from "./git.ts";
@@ -33,7 +33,7 @@ export interface PermissionLike {
  * Codex asks per MCP server, and other Paseo tools share the `paseo` server, so only the legacy server matches there.
  */
 export const isBoardToolRequest = (request: PermissionLike): boolean =>
-  request.metadata?.serverName === "todo-board" || request.name.startsWith("mcp__todo-board__") || /^mcp__paseo__todo_(report|add|start)$/.test(request.name) || /todo-board/i.test(request.title ?? "");
+  request.metadata?.serverName === "todo-board" || request.name.startsWith("mcp__todo-board__") || /^mcp__paseo__todo_(report|add|start|complete)$/.test(request.name) || /todo-board/i.test(request.title ?? "");
 
 const workDir = (card: Card) => card.workCwd ?? card.cwd;
 const planName = (card: Pick<Card, "id">) => `todo-${card.id.slice(0, 8)}.md`;
@@ -79,7 +79,7 @@ export class Runner {
     return this.store.all().some((card) => card.cwd === cwd && card.id !== except && card.state === "running" && card.workCwd === card.cwd);
   }
 
-  async add(input: { workspaceId: string | null; cwd: string; title: string; detail?: string }): Promise<Card> {
+  async add(input: { workspaceId: string | null; cwd: string; title: string; detail?: string; type?: CardType }): Promise<Card> {
     return this.store.upsert(newCard(input));
   }
 
@@ -172,8 +172,7 @@ export class Runner {
         await consume(entry);
       } else {
         await consume(entry);
-        if (message.kind === "add") await this.handleAdd(message);
-        else await this.handleStart(message);
+        await this.handleCommand(message);
       }
     }
     if (!latest && card.stage === "plan" && this.planViaMessage() && outcome.kind === "completed") {
@@ -216,28 +215,29 @@ export class Runner {
     if (attention !== card.attention) await this.store.upsert({ ...card, attention, updatedAt: stamp() });
   }
 
-  /** `todo_add` and `todo_start` take effect at once; reports wait for their session's turn to end. */
+  /** `todo_add`, `todo_start` and `todo_complete` take effect at once; reports wait for their session's turn to end. */
   async processInbox(): Promise<void> {
     for (const entry of await readInbox(this.deps.inboxDir)) {
       if (entry.message.kind === "report") continue;
       await consume(entry);
-      if (entry.message.kind === "add") await this.handleAdd(entry.message);
-      else await this.handleStart(entry.message);
+      await this.handleCommand(entry.message);
     }
   }
 
-  private async handleStart(message: Extract<InboxMessage, { kind: "start" }>): Promise<void> {
+  private async handleCommand(message: Exclude<InboxMessage, { kind: "report" }>): Promise<void> {
+    if (message.kind === "add") {
+      await this.add({ workspaceId: await this.workspaceFor(message.cwd), cwd: message.cwd, title: message.title, detail: message.detail, type: message.type });
+      return;
+    }
     const query = message.query.toLowerCase();
+    const inProgress = message.kind === "complete";
     const card = this.store
       .all()
-      .filter((card) => card.cwd === message.cwd && card.stage === "todo")
+      .filter((card) => card.cwd === message.cwd && (inProgress ? card.stage !== "todo" && card.stage !== "done" : card.stage === "todo"))
       .find((card) => card.id.startsWith(query) || card.title.toLowerCase().includes(query));
-    if (card) await this.start(card.id);
-    else console.error(`[todo-board] start: no todo card matching "${message.query}" in ${message.cwd}`);
-  }
-
-  private async handleAdd(message: Extract<InboxMessage, { kind: "add" }>): Promise<void> {
-    await this.add({ workspaceId: await this.workspaceFor(message.cwd), cwd: message.cwd, title: message.title, detail: message.detail });
+    if (!card) console.error(`[todo-board] ${message.kind}: no card matching "${message.query}" in ${message.cwd}`);
+    else if (inProgress) await this.action(card.id, "complete");
+    else await this.start(card.id);
   }
 
   private async workspaceFor(cwd: string): Promise<string | null> {
@@ -260,7 +260,7 @@ export class Runner {
 
   /** What prompts need to know about the card, including the plan text once it exists. */
   private async promptCard(card: Card): Promise<PromptCard> {
-    return { id: card.id, title: card.title, detail: card.detail, baseRef: card.baseRef, planPath: this.planPath(card), plan: await this.readPlan(card) };
+    return { id: card.id, title: card.title, detail: card.detail, baseRef: card.baseRef, planPath: this.planPath(card), plan: await this.readPlan(card), type: card.type, priorRounds: priorRounds(card.reports) };
   }
 
   /** A read-only planning turn cannot write files, so the plan text becomes the plan file (an existing file is kept). */
@@ -329,7 +329,7 @@ export class Runner {
       }
       case "create": {
         const provider = await this.resolveProvider(settings.reviewerProvider);
-        const roles = rolesFor(effect.stage, effect.stage === "review" ? settings.reviewRoles : settings.qaRoles);
+        const roles = rolesFor(effect.stage, effect.stage === "review" ? settings.reviewRoles : settings.qaRoles, card.type);
         const promptCard = await this.promptCard(card);
         const reviewers = [];
         for (const role of roles) {

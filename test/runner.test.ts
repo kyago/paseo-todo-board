@@ -315,7 +315,84 @@ test("only the board's own MCP tool prompts are recognised", () => {
   assert.equal(isBoardToolRequest({ name: "CodexMcpElicitation", title: "MCP approval: todo-board", metadata: { serverName: "todo-board" } }), true);
   assert.equal(isBoardToolRequest({ name: "mcp__todo-board__todo_report" }), true);
   assert.equal(isBoardToolRequest({ name: "mcp__paseo__todo_report" }), true);
+  assert.equal(isBoardToolRequest({ name: "mcp__paseo__todo_complete" }), true);
   assert.equal(isBoardToolRequest({ name: "mcp__paseo__create_agent" }), false);
   assert.equal(isBoardToolRequest({ name: "CodexMcpElicitation", title: "MCP approval: paseo", metadata: { serverName: "paseo" } }), false);
   assert.equal(isBoardToolRequest({ name: "Bash", title: "rm -rf /" }), false);
+});
+
+test("a team reviewing again gets the earlier rejections and fixes; the first team does not", async () => {
+  const { runner, store, created, report, attach } = await setup({ reviewRoles: "correctness", qaRoles: "qa-acceptance" });
+  attach();
+  const card = await runner.add({ workspaceId: "w", cwd: "/x", title: "B" });
+  await runner.start(card.id);
+  const worker = store.get(card.id)!.agentId!;
+  await report(card.id, worker, "done", "계획");
+  await runner.onTurnEnded(worker, { kind: "completed" });
+  await report(card.id, worker, "done", "구현");
+  await runner.onTurnEnded(worker, { kind: "completed" });
+  assert.doesNotMatch(created.at(-1).prompt, /<prior>/);
+  const first = store.get(card.id)!.reviewers[0].agentId;
+  await report(card.id, first, "fail", "표 누락", "review");
+  await runner.onTurnEnded(first, { kind: "completed" });
+  await report(card.id, worker, "done", "표 추가");
+  await runner.onTurnEnded(worker, { kind: "completed" });
+  assert.equal(store.get(card.id)!.stage, "review");
+  assert.match(created.at(-1).prompt, /<prior>[\s\S]*표 누락[\s\S]*표 추가[\s\S]*<\/prior>/);
+});
+
+test("a doc card added from chat runs one reviewer and one acceptance check through to done", async () => {
+  const { runner, store, created, report, inboxDir, attach } = await setup();
+  attach();
+  await writeFile(join(inboxDir, "a.json"), JSON.stringify({ kind: "add", cwd: "/x", title: "조사", type: "doc" }));
+  await runner.processInbox();
+  const card = store.all()[0];
+  assert.equal(card.type, "doc");
+  await runner.start(card.id);
+  const worker = store.get(card.id)!.agentId!;
+  await report(card.id, worker, "done", "계획");
+  await runner.onTurnEnded(worker, { kind: "completed" });
+  await report(card.id, worker, "done", "보고서 작성");
+  await runner.onTurnEnded(worker, { kind: "completed" });
+  assert.deepEqual(store.get(card.id)!.reviewers.map((r) => r.role), ["correctness"]);
+  const reviewer = store.get(card.id)!.reviewers[0].agentId;
+  await report(card.id, reviewer, "done", "일치", "review");
+  await runner.onTurnEnded(reviewer, { kind: "completed" });
+  assert.deepEqual(store.get(card.id)!.reviewers.map((r) => r.role), ["qa-acceptance"]);
+  const qa = store.get(card.id)!.reviewers[0].agentId;
+  await report(card.id, qa, "done", "충족", "qa");
+  await runner.onTurnEnded(qa, { kind: "completed" });
+  assert.equal(store.get(card.id)!.stage, "done");
+  assert.equal(created.length, 3);
+});
+
+test("cards saved before card types load as code cards", async () => {
+  const { runner, store, dir } = await setup();
+  const card = await runner.add({ workspaceId: "w", cwd: "/x", title: "옛 카드" });
+  const saved = JSON.parse(await readFile(join(dir, "board.json"), "utf8"));
+  const cards = Array.isArray(saved) ? saved : saved.cards;
+  delete cards.find((item: { id: string }) => item.id === card.id).type;
+  await writeFile(join(dir, "board.json"), JSON.stringify(saved));
+  const reloaded = new BoardStore(join(dir, "board.json"));
+  await reloaded.load();
+  assert.equal(reloaded.get(card.id)?.type, "code");
+  assert.equal(store.get(card.id)?.title, "옛 카드");
+});
+
+test("todo_complete from chat completes a stuck card in that directory and leaves others alone", async () => {
+  const { runner, store, inboxDir, attach, archived } = await setup();
+  attach();
+  const elsewhere = await runner.add({ workspaceId: "w", cwd: "/y", title: "RPC 현황" });
+  const waiting = await runner.add({ workspaceId: "w", cwd: "/x", title: "RPC 대기" });
+  const stuck = await runner.add({ workspaceId: "w", cwd: "/x", title: "RPC 현황" });
+  await store.upsert({ ...stuck, stage: "review", state: "needs_human", attention: "재시도 상한 초과", agentId: "worker", sessionIds: ["worker"] });
+  await writeFile(join(inboxDir, "c.json"), JSON.stringify({ kind: "complete", cwd: "/x", query: "RPC" }));
+  await runner.processInbox();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const done = store.get(stuck.id)!;
+  assert.equal(done.stage, "done");
+  assert.equal(done.attention, null);
+  assert.deepEqual(archived, ["worker"]);
+  assert.equal(store.get(waiting.id)!.stage, "todo");
+  assert.equal(store.get(elsewhere.id)!.stage, "todo");
 });

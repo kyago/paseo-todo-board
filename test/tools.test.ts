@@ -12,7 +12,7 @@ const run = (tool: { input: { parse(v: unknown): unknown }; execute(input: unkno
 test("a board session gets todo_report, which drops a report stamped with the card, stage and calling agent", async () => {
   const inbox = await mkdtemp(join(tmpdir(), "inbox-"));
   const tools = boardTools(inbox, { "todo-board/card": "card-1", "todo-board/stage": "review" }, "/proj");
-  assert.deepEqual(tools.map((tool) => tool.name), ["todo_report", "todo_add", "todo_start"]);
+  assert.deepEqual(tools.map((tool) => tool.name), ["todo_report", "todo_add", "todo_start", "todo_complete"]);
   await run(tools[0], { status: "fail", summary: "테스트 누락" });
   await run(tools[1], { title: "후속 작업" });
   const messages = await Promise.all((await readdir(inbox)).map(async (name) => JSON.parse(await readFile(join(inbox, name), "utf8"))));
@@ -21,5 +21,15 @@ test("a board session gets todo_report, which drops a report stamped with the ca
 });
 
 test("any other session only gets todo_add and todo_start", () => {
-  assert.deepEqual(boardTools("/x", {}, "/proj").map((tool) => tool.name), ["todo_add", "todo_start"]);
+  assert.deepEqual(boardTools("/x", {}, "/proj").map((tool) => tool.name), ["todo_add", "todo_start", "todo_complete"]);
+});
+
+test("todo_add carries the card type and todo_complete drops a complete message for this directory", async () => {
+  const inbox = await mkdtemp(join(tmpdir(), "inbox-"));
+  const [add, , complete] = boardTools(inbox, {}, "/proj");
+  await run(add, { title: "조사", type: "doc" });
+  await run(complete, { query: "조사" });
+  const messages = await Promise.all((await readdir(inbox)).map(async (name) => JSON.parse(await readFile(join(inbox, name), "utf8"))));
+  assert.deepEqual(messages.find((m) => m.kind === "add"), { kind: "add", cwd: "/proj", title: "조사", type: "doc" });
+  assert.deepEqual(messages.find((m) => m.kind === "complete"), { kind: "complete", cwd: "/proj", query: "조사" });
 });

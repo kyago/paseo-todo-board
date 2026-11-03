@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type AgentStage, type Card, type ReportStatus, type Reviewer, type Stage, STAGES } from "../shared/board.ts";
+import { type AgentStage, type Card, type CardType, type ReportStatus, type Reviewer, type Stage, STAGES } from "../shared/board.ts";
 
 /** What the runner must do after a transition. `send` goes to the worker session (created on first use); `create` starts the stage's team. */
 export type Effect =
@@ -31,10 +31,11 @@ export const nextStage = (stage: Stage): Stage => STAGES[Math.min(STAGES.indexOf
 export const responsibleAgents = (card: Card): string[] =>
   isTeamStage(card.stage) ? card.reviewers.map((reviewer) => reviewer.agentId) : card.agentId && (card.stage === "plan" || card.stage === "implement") ? [card.agentId] : [];
 
-export function newCard(input: { workspaceId: string | null; cwd: string; title: string; detail?: string }): Card {
+export function newCard(input: { workspaceId: string | null; cwd: string; title: string; detail?: string; type?: CardType }): Card {
   const at = now();
   return {
     id: randomUUID(),
+    type: input.type ?? "code",
     workspaceId: input.workspaceId,
     cwd: input.cwd,
     title: input.title.trim(),

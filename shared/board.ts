@@ -43,8 +43,13 @@ export type Reviewer = z.infer<typeof ReviewerSchema>;
 export const CardStateSchema = z.enum(["idle", "running", "blocked", "needs_human"]);
 export type CardState = z.infer<typeof CardStateSchema>;
 
+/** `doc`: an investigation or document card that changes no code, so only the roles that can judge it run. */
+export const CardTypeSchema = z.enum(["code", "doc"]);
+export type CardType = z.infer<typeof CardTypeSchema>;
+
 export const CardSchema = z.object({
   id: z.string(),
+  type: CardTypeSchema.default("code"),
   workspaceId: z.string().nullable(),
   cwd: z.string(),
   title: z.string(),
@@ -89,9 +94,11 @@ export const InboxMessageSchema = z.discriminatedUnion("kind", [
     status: ReportStatusSchema,
     summary: z.string(),
   }),
-  z.object({ kind: z.literal("add"), cwd: z.string(), title: z.string().min(1), detail: z.string().optional() }),
+  z.object({ kind: z.literal("add"), cwd: z.string(), title: z.string().min(1), detail: z.string().optional(), type: CardTypeSchema.optional() }),
   /** The user's "start" said in chat: a todo card in this directory whose id starts with or title contains `query`. */
   z.object({ kind: z.literal("start"), cwd: z.string(), query: z.string().min(1) }),
+  /** The user's "complete" said in chat: a card in progress in this directory, matched the same way. */
+  z.object({ kind: z.literal("complete"), cwd: z.string(), query: z.string().min(1) }),
 ]);
 export type InboxMessage = z.infer<typeof InboxMessageSchema>;
 

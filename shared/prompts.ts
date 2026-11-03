@@ -1,4 +1,4 @@
-import { type AgentStage, STAGE_LABELS } from "./board.ts";
+import { type AgentStage, type Report, STAGE_LABELS } from "./board.ts";
 import { type PromptCard, type Role, planSection } from "./roles.ts";
 
 export type { PromptCard } from "./roles.ts";
@@ -43,16 +43,36 @@ const PLAN = (card: PromptCard, viaMessage: boolean) =>
 
 const IMPLEMENT = (card: PromptCard, extra?: string) =>
   [
-    "아래 계획대로 구현한다. 관련 테스트를 실행해 통과를 확인한다. 커밋은 하지 않는다. 계획 파일이나 메모를 저장소 안에 만들지 않는다.",
+    card.type === "doc"
+      ? "아래 계획대로 카드 상세의 산출물을 만든다. 코드를 바꾸지 않는다. 커밋은 하지 않는다. 산출물 외의 계획 파일이나 메모를 저장소 안에 만들지 않는다."
+      : "아래 계획대로 구현한다. 관련 테스트를 실행해 통과를 확인한다. 커밋은 하지 않는다. 계획 파일이나 메모를 저장소 안에 만들지 않는다.",
     planSection(card),
     extra ? `반려 사유(반드시 반영):\n${extra}` : null,
   ]
     .filter(Boolean)
     .join("\n");
 
+const PRIOR_SUMMARY_LIMIT = 800;
+
+/** Rejections so far and the fixes that answered them; null until something was rejected. */
+export function priorRounds(reports: Report[]): string | null {
+  const first = reports.findIndex((report) => report.status === "fail");
+  if (first < 0) return null;
+  return reports
+    .slice(first)
+    .filter((report) => report.status === "fail" || report.stage === "implement")
+    .map((report) => `- [${STAGE_LABELS[report.stage]}${report.role ? ` · ${report.role}` : ""}] ${report.status}: ${report.summary.slice(0, PRIOR_SUMMARY_LIMIT)}`)
+    .join("\n");
+}
+
+const PRIOR = (card: PromptCard) =>
+  card.priorRounds
+    ? `이전 회차 기록이다. 여기서 정해진 것을 뒤집지 않고(지우라고 한 것을 다시 넣으라고 요구하는 등), 이미 지적되어 반영된 내용을 다시 지적하지 않는다.\n<prior>\n${card.priorRounds}\n</prior>`
+    : null;
+
 /** The prompt for a stage; review and QA prompts come from the team member's role. */
 export function stagePrompt(card: PromptCard, stage: AgentStage, options: PromptOptions = {}): string {
   const body =
     stage === "plan" ? PLAN(card, Boolean(options.planViaMessage)) : stage === "implement" ? IMPLEMENT(card, options.extra) : (options.role?.prompt(card) ?? "");
-  return `${HEADER(card, stage, options)}\n\n${body}`;
+  return [HEADER(card, stage, options), body, options.role ? PRIOR(card) : null].filter(Boolean).join("\n\n");
 }
