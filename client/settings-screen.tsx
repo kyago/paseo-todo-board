@@ -29,7 +29,7 @@ export function BoardSettingsScreen() {
           onValueChange={(autoAdvance) => save({ autoAdvance })}
         />
         <SettingsSwitch
-          label="모든 새 세션에 todo_add 도구 주입"
+          label="모든 세션에 todo_add·todo_start 도구 주입"
           hint="세션에서 '할 일로 남겨 줘'라고 하면 에이전트가 보드에 카드를 추가할 수 있습니다. 플러그인 설치 뒤 새로 만든 세션에만 적용됩니다."
           value={values.injectTools}
           onValueChange={(injectTools) => save({ injectTools })}

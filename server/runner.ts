@@ -9,8 +9,8 @@ import type { BoardSettingsValues } from "../shared/settings.ts";
 import { commitAll, createDraftPr, gitHead, hasRemote, isGitRepo, pushBranch } from "./git.ts";
 import { consume, readInbox } from "./inbox.ts";
 import { type Effect, type IncomingReport, type TurnOutcome, advance, applyReport, applyTurnEnded, newCard, rejectToImplement, responsibleAgents, retryStage, start } from "./machine.ts";
-import type { StdioMcpServer } from "./mcp.ts";
 import type { BoardStore } from "./store.ts";
+import { CARD_LABEL, STAGE_LABEL } from "./tools.ts";
 
 type Paseo = PluginHandlerContext["paseo"];
 
@@ -20,8 +20,6 @@ export interface RunnerDeps {
   /** Plan files live here, outside every repository. */
   plansDir: string;
   settings: () => BoardSettingsValues;
-  /** Builds the MCP server entry for a session the board creates. */
-  mcp: (env: Record<string, string>) => StdioMcpServer;
 }
 
 export interface PermissionLike {
@@ -30,9 +28,12 @@ export interface PermissionLike {
   metadata?: Record<string, unknown>;
 }
 
-/** Permission prompts for the board's own MCP tools (Codex asks per MCP server; Claude names them mcp__<server>__<tool>). */
+/**
+ * Permission prompts for the board's tools: plugin tools reach Claude as mcp__paseo__todo_*, pre-0.14 sessions as mcp__todo-board__*.
+ * Codex asks per MCP server, and other Paseo tools share the `paseo` server, so only the legacy server matches there.
+ */
 export const isBoardToolRequest = (request: PermissionLike): boolean =>
-  request.metadata?.serverName === "todo-board" || request.name.startsWith("mcp__todo-board__") || /todo-board/i.test(request.title ?? "");
+  request.metadata?.serverName === "todo-board" || request.name.startsWith("mcp__todo-board__") || /^mcp__paseo__todo_(report|add|start)$/.test(request.name) || /todo-board/i.test(request.title ?? "");
 
 const workDir = (card: Card) => card.workCwd ?? card.cwd;
 const planName = (card: Pick<Card, "id">) => `todo-${card.id.slice(0, 8)}.md`;
@@ -295,11 +296,11 @@ export class Runner {
     }
   }
 
-  /** Creates a session in the card's worktree workspace (or directory) with a chosen id so the MCP server can stamp its reports. */
-  private async createSession(card: Card, options: { provider: string; modeId?: string; title: string; prompt: string; env: Record<string, string>; labels: Record<string, string> }): Promise<string> {
+  /** Creates a session in the card's worktree workspace (or directory); its labels give it `todo_report` for this card and stage. */
+  private async createSession(card: Card, options: { provider: string; modeId?: string; title: string; prompt: string; labels: Record<string, string> }): Promise<string> {
     const agentId = randomUUID();
-    const config = { provider: options.provider, modeId: options.modeId, mcpServers: { "todo-board": this.deps.mcp({ TODO_CARD_ID: card.id, TODO_AGENT_ID: agentId, TODO_CWD: workDir(card), ...options.env }) } };
-    const common = { agentId, config, title: options.title, prompt: options.prompt, labels: { "todo-board/card": card.id, ...options.labels } };
+    const config = { provider: options.provider, modeId: options.modeId };
+    const common = { agentId, config, title: options.title, prompt: options.prompt, labels: { [CARD_LABEL]: card.id, ...options.labels } };
     const agent = card.workWorkspaceId
       ? await this.api().workspaces.ref(card.workWorkspaceId).agents.create(common)
       : await this.api().agents.create({ ...common, cwd: workDir(card) });
@@ -322,7 +323,6 @@ export class Runner {
           modeId: mode,
           title: `[투두] ${card.title}`,
           prompt,
-          env: {},
           labels: {},
         });
         return { ...card, agentId, sessionIds: [...card.sessionIds, agentId] };
@@ -338,8 +338,7 @@ export class Runner {
             modeId: settings.reviewerMode || undefined,
             title: `[투두 ${STAGE_LABELS[effect.stage]} · ${role.label}] ${card.title}`,
             prompt: stagePrompt(promptCard, effect.stage, { role }),
-            env: { TODO_STAGE: effect.stage },
-            labels: { "todo-board/stage": effect.stage, "todo-board/role": role.id },
+            labels: { [STAGE_LABEL]: effect.stage, "todo-board/role": role.id },
           });
           reviewers.push({ agentId, role: role.id, label: role.label, status: null, summary: null });
         }

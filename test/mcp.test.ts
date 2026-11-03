@@ -4,7 +4,7 @@ import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { installMcpScript, mcpServerConfig } from "../server/mcp.ts";
+import { installMcpScript } from "../server/mcp.ts";
 
 async function talk(env: Record<string, string>, requests: object[]): Promise<any[]> {
   const dir = await mkdtemp(join(tmpdir(), "todo-mcp-"));
@@ -56,14 +56,4 @@ test("a session without a card cannot report", async () => {
     { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "todo_report", arguments: { status: "done", summary: "x" } } },
   ]);
   assert.equal(reply.result.isError, true);
-});
-
-test("the server config points node at the installed script with the env", () => {
-  assert.deepEqual(mcpServerConfig("/usr/bin/node", "/x/mcp.mjs", { TODO_INBOX: "/x/inbox" }), {
-    type: "stdio",
-    command: "/usr/bin/node",
-    args: ["/x/mcp.mjs"],
-    env: { TODO_INBOX: "/x/inbox" },
-    alwaysLoad: true,
-  });
 });

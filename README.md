@@ -10,7 +10,7 @@ paseo plugin install github:kyago/paseo-todo-board
 paseo plugin install /absolute/path/to/paseo-todo-board
 ```
 
-Paseo 0.13.0 이상. 설치 후 Settings → Plugins → 투두 보드 → Options에서 작업·검토 세션의 provider와 권한 모드를 고른다.
+Paseo 0.14.0 이상. 설치 후 Settings → Plugins → 투두 보드 → Options에서 작업·검토 세션의 provider와 권한 모드를 고른다.
 
 ## 개발
 
@@ -21,5 +21,5 @@ npm test
 paseo plugin reload todo-board
 ```
 
-- `shared/` Zod 계약·프롬프트, `server/` 상태기계·저장소·MCP 서버·러너, `client/` 사이드바 화면과 설정.
-- 세션이 쓰는 MCP 도구: `todo_add`, `todo_start`, `todo_report`. 보드 상태는 `~/.paseo/plugin-data/todo-board/`.
+- `shared/` Zod 계약·프롬프트, `server/` 상태기계·저장소·에이전트 도구·러너, `client/` 사이드바 화면과 설정.
+- 세션이 쓰는 플러그인 도구(`defineAgentTool`): `todo_add`, `todo_start`, `todo_report`(보드가 만든 세션만). 보드 상태는 `~/.paseo/plugin-data/todo-board/`.

@@ -7,7 +7,7 @@ export const boardSettings = defineSettings({
   version: 1,
   schema: z.object({
     // How many times a review or QA rejection sends the card back to implementation before a person must look.
-    // Give every new session the `todo_add` / `todo_report` tools. Board-created sessions always get them.
+    // Give every session the `todo_add` / `todo_start` tools. Board-created sessions always get them plus `todo_report`.
     injectTools: z.boolean().default(true),
     maxRetries: z.number().int().min(0).max(5).default(2),
     // Off: reports are recorded but no stage transition happens without a button press.

@@ -1,8 +1,7 @@
-import { access, constants, mkdir, writeFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
 
 /**
- * The stdio MCP server every agent gets. It has no dependencies: newline-delimited JSON-RPC in,
+ * Legacy: the stdio MCP server sessions created before Paseo 0.14 still have in their saved config. New sessions get plugin tools (tools.ts). It has no dependencies: newline-delimited JSON-RPC in,
  * one JSON file per call out, into the inbox the plugin server watches.
  */
 export const MCP_SCRIPT = String.raw`import { randomUUID } from "node:crypto";
@@ -112,34 +111,4 @@ export async function installMcpScript(file: string): Promise<string> {
   await mkdir(file.slice(0, file.lastIndexOf("/")), { recursive: true });
   await writeFile(file, MCP_SCRIPT);
   return file;
-}
-
-/** The daemon subprocess may run inside Electron, so prefer a real `node` for the agents' MCP process. */
-export async function resolveNode(): Promise<string> {
-  const candidates = [
-    process.env.TODO_BOARD_NODE,
-    basename(process.execPath).startsWith("node") ? process.execPath : undefined,
-    "/opt/homebrew/bin/node",
-    "/usr/local/bin/node",
-  ];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    try {
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {}
-  }
-  return "node";
-}
-
-export interface StdioMcpServer {
-  type: "stdio";
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-  alwaysLoad: boolean;
-}
-
-export function mcpServerConfig(node: string, script: string, env: Record<string, string>): StdioMcpServer {
-  return { type: "stdio", command: node, args: [script], env, alwaysLoad: true };
 }

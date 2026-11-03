@@ -67,14 +67,13 @@ async function setup(overrides: Partial<ReturnType<typeof boardSettings.schema.p
     inboxDir,
     plansDir,
     settings: () => ({ ...boardSettings.schema.parse({}), ...overrides }),
-    mcp: (env) => ({ type: "stdio", command: "node", args: ["mcp.mjs"], env, alwaysLoad: true }),
   });
   const report = (cardId: string, agentId: string, status: string, summary: string, stage?: string) =>
     writeFile(join(inboxDir, `${Date.now()}-${Math.random()}.json`), JSON.stringify({ kind: "report", cardId, agentId, stage, status, summary }));
   return { dir, store, runner, inboxDir, plansDir, report, attach: () => runner.attach(fake.paseo), ...fake };
 }
 
-test("start creates the worker with a chosen id and a card-bound MCP server; the plan turn may use its own mode", async () => {
+test("start creates the worker with a chosen id and the card label; the plan turn may use its own mode", async () => {
   const { runner, store, created, sent, report, attach, dir, plansDir } = await setup({ planMode: "plan", useWorktree: false });
   attach();
   const card = await runner.add({ workspaceId: "w", cwd: dir, title: "기능 A" });
@@ -82,8 +81,8 @@ test("start creates the worker with a chosen id and a card-bound MCP server; the
   assert.equal(current.stage, "plan");
   assert.equal(current.agentId, created[0].agentId);
   assert.equal(created[0].config.modeId, "plan");
-  assert.equal(created[0].config.mcpServers["todo-board"].env.TODO_AGENT_ID, created[0].agentId);
-  assert.equal(created[0].config.mcpServers["todo-board"].env.TODO_STAGE, undefined);
+  assert.equal(created[0].labels["todo-board/card"], card.id);
+  assert.equal(created[0].labels["todo-board/stage"], undefined);
   assert.equal(created[0].config.provider, "claude/claude-default");
   assert.match(created[0].prompt, /현재 단계: 계획/);
 
@@ -315,5 +314,8 @@ test("without an origin the work is still committed on the branch and the card s
 test("only the board's own MCP tool prompts are recognised", () => {
   assert.equal(isBoardToolRequest({ name: "CodexMcpElicitation", title: "MCP approval: todo-board", metadata: { serverName: "todo-board" } }), true);
   assert.equal(isBoardToolRequest({ name: "mcp__todo-board__todo_report" }), true);
+  assert.equal(isBoardToolRequest({ name: "mcp__paseo__todo_report" }), true);
+  assert.equal(isBoardToolRequest({ name: "mcp__paseo__create_agent" }), false);
+  assert.equal(isBoardToolRequest({ name: "CodexMcpElicitation", title: "MCP approval: paseo", metadata: { serverName: "paseo" } }), false);
   assert.equal(isBoardToolRequest({ name: "Bash", title: "rm -rf /" }), false);
 });
