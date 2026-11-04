@@ -2,7 +2,7 @@ import { type PluginScreenProps, usePaseo, useRpc } from "@getpaseo/plugin/clien
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { type Card, type CardAction, addCard, cardAction, listAllCards } from "../shared/board";
+import { type Card, type CardAction, addCard, cardAction, listAllCards, rateCard } from "../shared/board";
 import { BoardView, folderName } from "./board-view";
 
 interface WorkspaceChoice {
@@ -19,6 +19,7 @@ export function BoardScreen({ theme, layout, params }: PluginScreenProps) {
   const listAll = useRpc(listAllCards);
   const add = useRpc(addCard);
   const act = useRpc(cardAction);
+  const rate = useRpc(rateCard);
   const queryClient = useQueryClient();
   const preselected = typeof params.workspaceId === "string" ? params.workspaceId : null;
   const [selected, setSelected] = useState(preselected ?? ALL);
@@ -37,6 +38,7 @@ export function BoardScreen({ theme, layout, params }: PluginScreenProps) {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["todo-board", "all"] });
   const addMutation = useMutation({ mutationFn: (input: { workspaceId: string; cwd: string; title: string }) => add(input), onSuccess: invalidate });
   const actMutation = useMutation({ mutationFn: (input: { cardId: string; action: CardAction }) => act(input), onSuccess: invalidate });
+  const rateMutation = useMutation({ mutationFn: (input: { cardId: string; score: number; note?: string }) => rate(input), onSuccess: invalidate });
 
   const choices = workspaces.data ?? [];
   const current = choices.find((workspace) => workspace.id === selected) ?? null;
@@ -82,9 +84,10 @@ export function BoardScreen({ theme, layout, params }: PluginScreenProps) {
       cards={cards}
       header={header}
       showFolder={!current}
-      error={cardsQuery.error ?? workspaces.error ?? addMutation.error ?? actMutation.error}
+      error={cardsQuery.error ?? workspaces.error ?? addMutation.error ?? actMutation.error ?? rateMutation.error}
       onAdd={current ? (title) => addMutation.mutate({ workspaceId: current.id, cwd: current.cwd, title }) : null}
       onAction={(cardId, action) => actMutation.mutate({ cardId, action })}
+      onRate={(cardId, score, note) => rateMutation.mutate({ cardId, score, note })}
     />
   );
 }

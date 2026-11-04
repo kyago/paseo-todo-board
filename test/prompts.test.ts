@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { stagePrompt } from "../shared/prompts.ts";
-import { ROLES, rolesFor } from "../shared/roles.ts";
+import { parseRating, priorRounds, ratingPrompt, stagePrompt } from "../shared/prompts.ts";
+import { ROLES, recheckRoles, rolesFor } from "../shared/roles.ts";
 
 const card = { id: "abcdef12-3456", title: "로그인 버그 수정", detail: "세션 만료 시 500", baseRef: "deadbeef", planPath: "/data/plans/todo-abcdef12.md", plan: "1. 토큰 갱신\n2. 테스트" };
 
@@ -31,11 +31,10 @@ test("review diffs against the base ref when there is one, else reads the whole 
 });
 
 test("roles are selected by id per stage and fall back to the whole team", () => {
-  assert.deepEqual(rolesFor("review", "simplicity, security").map((role) => role.id), ["security", "simplicity"]);
-  assert.deepEqual(rolesFor("review", "").map((role) => role.id), ["correctness", "security", "tests", "simplicity"]);
+  assert.deepEqual(rolesFor("review", "tests, security, simplicity").map((role) => role.id), ["security", "tests"]);
+  assert.deepEqual(rolesFor("review", "").map((role) => role.id), ["correctness", "security", "tests"]);
   assert.deepEqual(rolesFor("qa", "nope").map((role) => role.id), ["qa-run", "qa-acceptance"]);
   for (const role of ROLES) assert.match(role.prompt(card), /status=fail|status=done/);
-  assert.match(ROLES.find((role) => role.id === "simplicity")!.prompt(card), /Lean already\. Ship\./);
 });
 
 test("a rejection reason is appended to the implementation prompt", () => {
@@ -48,6 +47,89 @@ test("a message-mode plan prompt asks for the plan as the last message and forbi
   assert.match(text, /마지막 메시지/);
   assert.match(text, /ExitPlanMode/);
   assert.match(text, /BLOCKED:/);
-  assert.doesNotMatch(text, /반드시 MCP 도구/);
-  assert.match(stagePrompt(card, "plan"), /반드시 MCP 도구 `todo_report`/);
+  assert.doesNotMatch(text, /끝나면 `todo_report`로 보고/);
+  assert.match(stagePrompt(card, "plan"), /끝나면 `todo_report`로 보고/);
+});
+
+test("rejection is limited to real problems", () => {
+  const roles = Object.fromEntries(ROLES.map((role) => [role.id, role.prompt(card)]));
+  assert.match(roles.correctness, /수용 기준이나 계획 위반, 사실 오류, 실제 결함이나 취약점만 status=fail/);
+  assert.match(roles.correctness, /개선 의견은 status=done의 summary에 제안/);
+  assert.match(roles.tests, /테스트가 전혀 없으면 status=fail/);
+});
+
+test("every prompt states a goal", () => {
+  for (const stage of ["plan", "implement"] as const) assert.match(stagePrompt(card, stage), /목표: /);
+  for (const role of ROLES) assert.match(role.prompt(card), /^목표: /);
+});
+
+test("a doc card runs only the roles that can judge it and its prompts point at the deliverable", () => {
+  const doc = { ...card, type: "doc" as const };
+  assert.deepEqual(rolesFor("review", "", "doc").map((role) => role.id), ["correctness"]);
+  assert.deepEqual(rolesFor("qa", "", "doc").map((role) => role.id), ["qa-acceptance"]);
+  assert.deepEqual(rolesFor("review", "security", "doc").map((role) => role.id), ["correctness"]);
+  const correctness = ROLES.find((role) => role.id === "correctness")!;
+  assert.match(correctness.prompt(doc), /카드 상세에 적힌 산출물/);
+  assert.doesNotMatch(correctness.prompt(doc), /git diff/);
+  assert.match(stagePrompt(doc, "implement"), /산출물을 만든다/);
+  assert.doesNotMatch(stagePrompt(doc, "implement"), /구현하고/);
+});
+
+test("prior rounds keep rejections and the fixes that answered them, and only team prompts show them", () => {
+  const at = "2026-11-03T00:00:00Z";
+  const reports = [
+    { stage: "plan" as const, status: "done" as const, summary: "계획 본문", at },
+    { stage: "implement" as const, status: "done" as const, summary: "처음 구현", at },
+    { stage: "review" as const, status: "done" as const, summary: "문제 없음", at, role: "보안" },
+    { stage: "review" as const, status: "fail" as const, summary: "체크리스트를 지운다", at, role: "오버엔지니어링" },
+    { stage: "implement" as const, status: "done" as const, summary: "체크리스트 삭제", at },
+  ];
+  assert.equal(priorRounds(reports.slice(0, 3)), null);
+  const text = priorRounds(reports)!;
+  assert.match(text, /\[검토 · 오버엔지니어링\] fail: 체크리스트를 지운다/);
+  assert.match(text, /\[구현\] done: 체크리스트 삭제/);
+  assert.doesNotMatch(text, /계획 본문|처음 구현|문제 없음/);
+  assert.equal(priorRounds([{ stage: "review", status: "fail", summary: "가".repeat(2000), at }])!.length < 900, true);
+
+  const correctness = ROLES.find((role) => role.id === "correctness")!;
+  const again = { ...card, priorRounds: text };
+  assert.match(stagePrompt(again, "review", { role: correctness }), /뒤집지 않고[\s\S]*<prior>[\s\S]*체크리스트 삭제/);
+  assert.doesNotMatch(stagePrompt(again, "implement"), /<prior>/);
+  assert.doesNotMatch(stagePrompt(card, "review", { role: correctness }), /<prior>/);
+});
+
+test("the rating prompt is independent of team reports and states the scale and the answer format", () => {
+  const text = ratingPrompt({ ...card, priorRounds: "- [검토] fail: 지적" });
+  assert.match(text, /5=그대로 쓴다, 3=쓸 수 있지만 아쉽다, 1=다시 해야 한다/);
+  assert.match(text, /git diff deadbeef/);
+  assert.match(text, /<plan>/);
+  assert.match(text, /`점수: N`/);
+  assert.doesNotMatch(text, /지적|todo_report/);
+});
+
+test("a rating is read from any line in the common forms, and anything else is no rating", () => {
+  assert.deepEqual(parseRating("점수: 4\n근거 한 줄\n둘째 줄"), { score: 4, reason: "근거 한 줄\n둘째 줄" });
+  assert.deepEqual(parseRating("평가했습니다.\n\n**점수: 5**\n좋음"), { score: 5, reason: "평가했습니다.\n\n좋음" });
+  assert.deepEqual(parseRating("점수: 5\n---\n\n- 근거"), { score: 5, reason: "- 근거" });
+  assert.deepEqual(parseRating("- 점수: 4 — 근거 한 줄"), { score: 4, reason: "근거 한 줄" });
+  assert.equal(parseRating("점수: 4.")?.score, 4);
+  assert.equal(parseRating("점수: 4점")?.score, 4);
+  assert.equal(parseRating("점수: 3/5")?.score, 3);
+  assert.equal(parseRating("점수：2")?.score, 2);
+  for (const text of ["점수: 5점 만점에 4점", "점수: 1~5 중 3", "점수: 4-5", "점수: 0", "점수: 6", "점수: 10", "점수: 4.5", "점수는 좋음", "4점입니다", "점수\n3 files", ""]) assert.equal(parseRating(text), null, text);
+});
+
+test("a repeat review runs correctness and the roles that failed; the first round and an empty choice run in full", () => {
+  const at = "2026-11-04T00:00:00Z";
+  const team = rolesFor("review", "");
+  const ids = (roles: typeof team) => roles.map((role) => role.id);
+  const implement = { stage: "implement" as const, status: "done" as const, summary: "", at };
+  const review = (role: string, status: "done" | "fail") => ({ stage: "review" as const, status, summary: "", at, role });
+  assert.deepEqual(ids(recheckRoles(team, [implement])), ["correctness", "security", "tests"]);
+  assert.deepEqual(ids(recheckRoles(team, [implement, review("테스트 적정성", "fail"), review("보안", "done"), implement])), ["correctness", "tests"]);
+  // Only the latest round counts, and a QA rejection leaves correctness alone.
+  const old = [implement, review("보안", "fail"), implement, review("보안", "done"), { stage: "qa" as const, status: "fail" as const, summary: "", at, role: "실행" }, implement];
+  assert.deepEqual(ids(recheckRoles(team, old)), ["correctness"]);
+  const noCorrectness = rolesFor("review", "security,tests");
+  assert.deepEqual(ids(recheckRoles(noCorrectness, old)), ["security", "tests"]);
 });

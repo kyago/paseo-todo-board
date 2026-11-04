@@ -1,11 +1,12 @@
 import { watch } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { installMcpScript, mcpServerConfig, resolveNode } from "./server/mcp.ts";
+import { installMcpScript } from "./server/mcp.ts";
 import { boardFile, inboxDir, mcpScriptFile, plansDir } from "./server/paths.ts";
 import { Runner } from "./server/runner.ts";
 import { BoardStore } from "./server/store.ts";
-import { addCard, cardAction, clientLog, listAllCards, listCards } from "./shared/board.ts";
+import { boardTools, CARD_LABEL } from "./server/tools.ts";
+import { addCard, cardAction, clientLog, listAllCards, listCards, rateCard } from "./shared/board.ts";
 import { type BoardSettingsValues, boardSettings } from "./shared/settings.ts";
 
 export default function contribute(server: PluginServerContext) {
@@ -18,26 +19,23 @@ export default function contribute(server: PluginServerContext) {
   void settings.read().then(applySettings);
   const stopSettings = settings.subscribe(applySettings);
 
-  let node = "node";
   const inbox = inboxDir();
-  const script = mcpScriptFile();
-  const mcp = (env: Record<string, string>) => mcpServerConfig(node, script, { TODO_INBOX: inbox, ...env });
-  const runner = new Runner({ store, inboxDir: inbox, plansDir: plansDir(), settings: () => values, mcp });
+  const runner = new Runner({ store, inboxDir: inbox, plansDir: plansDir(), settings: () => values });
 
   let watcher: ReturnType<typeof watch> | null = null;
   let timer: NodeJS.Timeout | null = null;
   const ready = (async () => {
     await store.load();
     await mkdir(inbox, { recursive: true });
-    await installMcpScript(script);
-    node = await resolveNode();
+    // Sessions created before 0.14 still launch this stdio server from their saved config.
+    await installMcpScript(mcpScriptFile());
     await runner.processInbox();
-    // `todo_add` from any session lands here; reports stay until that session's turn ends.
+    // `todo_add`/`todo_start` from any session land here; reports stay until that session's turn ends.
     watcher = watch(inbox, () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => void runner.processInbox().catch((error) => console.error("[todo-board] inbox", error)), 300);
     });
-    console.log(`[todo-board] ready: ${store.all().length} cards, mcp ${node} ${script}`);
+    console.log(`[todo-board] ready: ${store.all().length} cards`);
   })().catch((error) => console.error("[todo-board] startup failed", error));
 
   server.handle(clientLog, ({ message }) => {
@@ -64,14 +62,19 @@ export default function contribute(server: PluginServerContext) {
     runner.attach(paseo);
     return { card: await runner.action(cardId, action) };
   });
+  server.handle(rateCard, async ({ cardId, score, note }, { paseo }) => {
+    await ready;
+    runner.attach(paseo);
+    return { card: await runner.rate(cardId, score, note) };
+  });
 
   const removers = [
-    // Every new session gets todo_add; sessions the board creates already carry their own entry.
-    server.before("agent.create", async ({ request }, { paseo }) => {
+    // Every session gets todo_add/todo_start; the board's own sessions (card label) also get todo_report.
+    server.before("agent.session_open", async ({ request }, { paseo }) => {
       await ready;
       runner.attach(paseo);
-      if (!values.injectTools || request.config.mcpServers?.["todo-board"]) return;
-      return { ...request, config: { ...request.config, mcpServers: { ...request.config.mcpServers, "todo-board": mcp({ TODO_CWD: request.config.cwd }) } } };
+      if (!request.labels[CARD_LABEL] && !values.injectTools) return;
+      return { ...request, tools: [...request.tools, ...boardTools(inbox, request.labels, request.cwd)] };
     }),
     // The earliest moments a daemon session reaches the plugin; a `todo_start` before any of them waits in the queue.
     server.on("agent.turn_started", async (_event, { paseo }) => {

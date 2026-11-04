@@ -3,6 +3,7 @@ import { ExternalLink } from "@getpaseo/plugin/client/ui";
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { type Card, type CardAction, type ReportStatus, STAGE_LABELS, STAGES } from "../shared/board";
+import { cardMetrics } from "../shared/metrics";
 
 export type PluginTheme = PluginScreenProps["theme"];
 type Colors = PluginTheme["colors"];
@@ -71,6 +72,79 @@ const makeStyles = (theme: PluginTheme, compact: boolean) => ({
   empty: { color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic" as const },
 });
 
+const SCORES = [1, 2, 3, 4, 5];
+
+/** The behaviour metrics of a finished card. */
+function metricsLines(card: Card): string[] {
+  const metrics = cardMetrics(card);
+  const fails = Object.entries(metrics.failsByRole).map(([role, count]) => `${STAGE_LABELS[role as keyof typeof STAGE_LABELS] ?? role} ${count}`).join(", ");
+  const stages = Object.entries(metrics.stageMinutes).map(([stage, minutes]) => `${STAGE_LABELS[stage as keyof typeof STAGE_LABELS]} ${minutes}분`).join(" · ");
+  const closed = metrics.completedBy === "qa" ? " · QA 통과" : metrics.completedBy === "manual" ? " · 수동 완료" : "";
+  return [
+    `반려 ${metrics.retries} · 차단 ${metrics.blocked} · 수동 ${metrics.manual}${metrics.minutes === null ? "" : ` · ${metrics.minutes}분`}${closed}`,
+    fails ? `fail: ${fails}` : null,
+    stages || null,
+  ].filter((line): line is string => line !== null);
+}
+
+/** The AI's score stays hidden until the person has rated, so it cannot anchor their judgement. */
+function aiRatingText(card: Card): string | null {
+  if (card.aiRaterId) return "AI 평가 중";
+  if (!card.aiRating) return null;
+  if (card.aiRating.score === null) return `AI 평가 실패: ${card.aiRating.reason}`;
+  return card.userRating ? `AI 평가 ${card.aiRating.score}점: ${card.aiRating.reason}` : "AI 평가 완료 (내 평가 후 공개)";
+}
+
+function RatingRow({ card, theme, styles, onRate }: { card: Card; theme: PluginTheme; styles: ReturnType<typeof makeStyles>; onRate: BoardViewProps["onRate"] }) {
+  const [note, setNote] = useState(card.userRating?.note ?? "");
+  const rated = card.userRating;
+  const aiText = aiRatingText(card);
+  const saveNote = () => {
+    if (rated && note.trim() !== (rated.note ?? "")) onRate(card.id, rated.score, note);
+  };
+  return (
+    <View style={{ gap: 4 }}>
+      <View style={[styles.actions, { alignItems: "center" as const }]}>
+        <Text style={styles.meta}>내 평가</Text>
+        {SCORES.map((score) => {
+          const selected = rated?.score === score;
+          return (
+            <Pressable
+              key={score}
+              accessibilityRole="button"
+              accessibilityLabel={`${card.title}: ${score}점`}
+              accessibilityState={{ selected }}
+              onPress={() => onRate(card.id, score, note)}
+              style={[styles.button, selected && { backgroundColor: theme.colors.accent }]}
+            >
+              <Text style={[styles.buttonText, selected && { color: theme.colors.accentForeground }]}>{score}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      {rated ? (
+        <TextInput
+          style={[styles.input, { flex: 0, fontSize: 12, paddingVertical: 5 }]}
+          value={note}
+          onChangeText={setNote}
+          onSubmitEditing={saveNote}
+          onBlur={saveNote}
+          placeholder="이유 (선택)"
+          placeholderTextColor={theme.colors.foregroundMuted}
+          accessibilityLabel={`${card.title}: 평가 이유`}
+        />
+      ) : (
+        <Text style={styles.meta}>5 그대로 쓴다 · 3 쓸 수 있지만 아쉽다 · 1 다시 해야 한다</Text>
+      )}
+      {aiText ? (
+        <Text style={styles.report} numberOfLines={6}>
+          {aiText}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
 export interface BoardViewProps {
   theme: PluginTheme;
   compact: boolean;
@@ -78,13 +152,14 @@ export interface BoardViewProps {
   /** Null disables the add row (no workspace chosen). */
   onAdd: ((title: string) => void) | null;
   onAction: (cardId: string, action: CardAction) => void;
+  onRate: (cardId: string, score: number, note?: string) => void;
   /** Show each card's folder; for the cross-workspace view. */
   showFolder?: boolean;
   error?: unknown;
   header?: React.ReactNode;
 }
 
-export function BoardView({ theme, compact, cards, onAdd, onAction, showFolder, error, header }: BoardViewProps) {
+export function BoardView({ theme, compact, cards, onAdd, onAction, onRate, showFolder, error, header }: BoardViewProps) {
   const [title, setTitle] = useState("");
   const styles = useMemo(() => makeStyles(theme, compact), [theme, compact]);
 
@@ -153,6 +228,14 @@ export function BoardView({ theme, compact, cards, onAdd, onAction, showFolder, 
                         [{STAGE_LABELS[last.stage]}{last.role ? ` · ${last.role}` : ""} {statusText(last.status)}] {last.summary}
                       </Text>
                     ) : null}
+                    {card.stage === "done"
+                      ? metricsLines(card).map((line) => (
+                          <Text key={line} style={styles.meta}>
+                            {line}
+                          </Text>
+                        ))
+                      : null}
+                    {card.stage === "done" ? <RatingRow card={card} theme={theme} styles={styles} onRate={onRate} /> : null}
                     <View style={styles.actions}>
                       {actionsFor(card).map(({ label, action }) => (
                         <Pressable

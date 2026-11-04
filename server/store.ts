@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { type Card, CardSchema } from "../shared/board.ts";
+import { transitions } from "./machine.ts";
 
 const FileSchema = z.object({ cards: z.array(CardSchema) });
 
@@ -45,12 +46,33 @@ export class BoardStore {
     return this.cards.find((card) => card.agentId === agentId || card.reviewers.some((reviewer) => reviewer.agentId === agentId));
   }
 
-  async upsert(card: Card): Promise<Card> {
-    const index = this.cards.findIndex((item) => item.id === card.id);
-    if (index === -1) this.cards.push(card);
-    else this.cards[index] = card;
+  async add(card: Card): Promise<Card> {
+    this.cards.push(card);
     await this.save();
     return card;
+  }
+
+  /**
+   * Ratings and the timeline change only through `annotate`, so a copy read before a long await (a PR push) cannot erase them.
+   * A card deleted during that await stays deleted.
+   */
+  async upsert(card: Card): Promise<Card> {
+    const index = this.cards.findIndex((item) => item.id === card.id);
+    if (index === -1) return card;
+    const prev = this.cards[index];
+    const next = { ...card, userRating: prev.userRating, aiRating: prev.aiRating, aiRaterId: prev.aiRaterId, events: [...prev.events, ...transitions(prev, card)] };
+    this.cards[index] = next;
+    await this.save();
+    return next;
+  }
+
+  async annotate(id: string, patch: Partial<Pick<Card, "userRating" | "aiRating" | "aiRaterId" | "events">>): Promise<Card | null> {
+    const index = this.cards.findIndex((item) => item.id === id);
+    if (index === -1) return null;
+    const next = { ...this.cards[index], ...patch, updatedAt: new Date().toISOString() };
+    this.cards[index] = next;
+    await this.save();
+    return next;
   }
 
   async remove(id: string): Promise<void> {

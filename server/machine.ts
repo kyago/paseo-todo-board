@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type AgentStage, type Card, type ReportStatus, type Reviewer, type Stage, STAGES } from "../shared/board.ts";
+import { type AgentStage, type Card, type CardEvent, type CardType, type ReportStatus, type Reviewer, type Stage, STAGES } from "../shared/board.ts";
 
 /** What the runner must do after a transition. `send` goes to the worker session (created on first use); `create` starts the stage's team. */
 export type Effect =
@@ -31,10 +31,11 @@ export const nextStage = (stage: Stage): Stage => STAGES[Math.min(STAGES.indexOf
 export const responsibleAgents = (card: Card): string[] =>
   isTeamStage(card.stage) ? card.reviewers.map((reviewer) => reviewer.agentId) : card.agentId && (card.stage === "plan" || card.stage === "implement") ? [card.agentId] : [];
 
-export function newCard(input: { workspaceId: string | null; cwd: string; title: string; detail?: string }): Card {
+export function newCard(input: { workspaceId: string | null; cwd: string; title: string; detail?: string; type?: CardType }): Card {
   const at = now();
   return {
     id: randomUUID(),
+    type: input.type ?? "code",
     workspaceId: input.workspaceId,
     cwd: input.cwd,
     title: input.title.trim(),
@@ -54,9 +55,24 @@ export function newCard(input: { workspaceId: string | null; cwd: string; title:
     prUrl: null,
     retries: 0,
     reports: [],
+    userRating: null,
+    aiRating: null,
+    aiRaterId: null,
+    runMeta: null,
+    events: [],
     createdAt: at,
     updatedAt: at,
   };
+}
+
+/** Events a card's change adds to its timeline: entering a stage, and starting to wait for a person. */
+export function transitions(prev: Card, next: Card): CardEvent[] {
+  const at = now();
+  const events: CardEvent[] = [];
+  if (next.stage !== prev.stage) events.push({ kind: "stage", stage: next.stage, at });
+  const stopped = next.state === "blocked" || next.state === "needs_human";
+  if (stopped && next.state !== prev.state) events.push({ kind: "blocked", stage: next.stage, detail: next.attention ?? undefined, at });
+  return events;
 }
 
 function entryEffect(stage: Stage, extra?: string): Effect {
