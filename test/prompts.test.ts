@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { priorRounds, stagePrompt } from "../shared/prompts.ts";
+import { parseRating, priorRounds, ratingPrompt, stagePrompt } from "../shared/prompts.ts";
 import { ROLES, rolesFor } from "../shared/roles.ts";
 
 const card = { id: "abcdef12-3456", title: "로그인 버그 수정", detail: "세션 만료 시 500", baseRef: "deadbeef", planPath: "/data/plans/todo-abcdef12.md", plan: "1. 토큰 갱신\n2. 테스트" };
@@ -98,4 +98,22 @@ test("prior rounds keep rejections and the fixes that answered them, and only te
   assert.match(stagePrompt(again, "review", { role: correctness }), /뒤집지 않고[\s\S]*<prior>[\s\S]*체크리스트 삭제/);
   assert.doesNotMatch(stagePrompt(again, "implement"), /<prior>/);
   assert.doesNotMatch(stagePrompt(card, "review", { role: correctness }), /<prior>/);
+});
+
+test("the rating prompt is independent of team reports and states the scale and the answer format", () => {
+  const text = ratingPrompt({ ...card, priorRounds: "- [검토] fail: 지적" });
+  assert.match(text, /5=그대로 쓴다, 3=쓸 수 있지만 아쉽다, 1=다시 해야 한다/);
+  assert.match(text, /git diff deadbeef/);
+  assert.match(text, /<plan>/);
+  assert.match(text, /`점수: N`/);
+  assert.doesNotMatch(text, /지적|todo_report/);
+});
+
+test("a rating is read from any line in the common forms, and anything else is no rating", () => {
+  assert.deepEqual(parseRating("점수: 4\n근거 한 줄\n둘째 줄"), { score: 4, reason: "근거 한 줄\n둘째 줄" });
+  assert.deepEqual(parseRating("평가했습니다.\n\n**점수: 5**\n좋음"), { score: 5, reason: "평가했습니다.\n\n좋음" });
+  assert.deepEqual(parseRating("점수: 5\n---\n\n- 근거"), { score: 5, reason: "- 근거" });
+  assert.equal(parseRating("점수: 3/5")?.score, 3);
+  assert.equal(parseRating("점수：2")?.score, 2);
+  for (const text of ["점수: 0", "점수: 6", "점수: 10", "점수: 4.5", "점수는 좋음", "4점입니다", "점수\n3 files", ""]) assert.equal(parseRating(text), null, text);
 });

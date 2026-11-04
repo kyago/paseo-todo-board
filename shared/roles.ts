@@ -14,7 +14,7 @@ export interface PromptCard {
   priorRounds?: string | null;
 }
 
-const scope = (card: PromptCard) => (card.type === "doc" ? "범위: 카드 상세에 적힌 산출물" : card.baseRef ? `범위: \`git diff ${card.baseRef}\`` : "범위: 작업 트리의 변경 파일 전체");
+export const scope = (card: PromptCard) => (card.type === "doc" ? "범위: 카드 상세에 적힌 산출물" : card.baseRef ? `범위: \`git diff ${card.baseRef}\`` : "범위: 작업 트리의 변경 파일 전체");
 const NO_EDIT = "코드를 수정하지 않는다.";
 const VERDICT = `${NO_EDIT} 수용 기준이나 계획 위반, 사실 오류, 실제 결함이나 취약점만 status=fail에 수정 목록으로 보고하고, 그 밖의 개선 의견은 status=done의 summary에 제안으로 적는다.`;
 /** The plan as a quoted section; prompts that compare work against the plan include it in full. */

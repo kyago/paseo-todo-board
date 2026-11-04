@@ -363,7 +363,8 @@ test("a doc card added from chat runs one reviewer and one acceptance check thro
   await report(card.id, qa, "done", "충족", "qa");
   await runner.onTurnEnded(qa, { kind: "completed" });
   assert.equal(store.get(card.id)!.stage, "done");
-  assert.equal(created.length, 3);
+  // Worker, one reviewer, one acceptance check, and the rating session.
+  assert.equal(created.length, 4);
 });
 
 test("cards saved before card types load as code cards", async () => {
@@ -395,4 +396,152 @@ test("todo_complete from chat completes a stuck card in that directory and leave
   assert.deepEqual(archived, ["worker"]);
   assert.equal(store.get(waiting.id)!.stage, "todo");
   assert.equal(store.get(elsewhere.id)!.stage, "todo");
+});
+
+/** A card walked to completion through the buttons, with its PR and rating flow running. */
+async function finished(overrides: Partial<ReturnType<typeof boardSettings.schema.parse>> = {}) {
+  const context = await setup({ useWorktree: false, createPr: false, ...overrides });
+  context.attach();
+  const card = await context.runner.add({ workspaceId: "w", cwd: "/x", title: "평가 대상" });
+  await context.runner.start(card.id);
+  await context.runner.action(card.id, "complete");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  return { ...context, card };
+}
+
+test("start records what the card runs with", async () => {
+  const { runner, store, attach } = await setup({ useWorktree: false, reviewRoles: "security" });
+  attach();
+  const card = await runner.add({ workspaceId: "w", cwd: "/x", title: "C" });
+  await runner.start(card.id);
+  const meta = store.get(card.id)!.runMeta!;
+  assert.match(meta.promptVersion, /^[0-9a-f]{8}$/);
+  assert.equal(meta.worker, "claude/claude-default");
+  assert.equal(meta.reviewer, "codex/codex-default");
+  assert.equal(meta.reviewRoles, "security");
+  assert.deepEqual(store.get(card.id)!.events.map((event) => event.stage), ["plan"]);
+});
+
+test("completion starts a rating session without the card's report tool, and its last message becomes the AI rating", async () => {
+  const { store, created, archived, runner, lastText, card } = await finished();
+  const rater = created.at(-1);
+  assert.match(rater.title, /투두 평가/);
+  assert.match(rater.prompt, /점수: N/);
+  assert.equal(rater.labels["todo-board/card"], undefined);
+  assert.equal(rater.config.provider, "codex/codex-default");
+  assert.equal(store.get(card.id)!.aiRaterId, rater.agentId);
+  assert.equal(archived.includes(rater.agentId), false);
+
+  lastText.value = "점수: 4\n수용 기준 충족";
+  await runner.onTurnEnded(rater.agentId, { kind: "completed" });
+  const current = store.get(card.id)!;
+  assert.equal(current.aiRaterId, null);
+  assert.equal(current.aiRating?.score, 4);
+  assert.equal(current.aiRating?.reason, "수용 기준 충족");
+  assert.equal(archived.includes(rater.agentId), true);
+  assert.equal(current.stage, "done");
+});
+
+test("a rating that cannot be read or fails is recorded without a score and does not touch the card", async () => {
+  const unreadable = await finished();
+  unreadable.lastText.value = "좋아 보입니다";
+  await unreadable.runner.onTurnEnded(unreadable.created.at(-1).agentId, { kind: "completed" });
+  assert.equal(unreadable.store.get(unreadable.card.id)!.aiRating?.score, null);
+  assert.match(unreadable.store.get(unreadable.card.id)!.aiRating!.reason, /점수를 읽지 못함: 좋아 보입니다/);
+
+  const failed = await finished();
+  await failed.runner.onTurnEnded(failed.created.at(-1).agentId, { kind: "failed", error: { message: "한도 초과" } });
+  assert.match(failed.store.get(failed.card.id)!.aiRating!.reason, /오류: 한도 초과/);
+  assert.equal(failed.store.get(failed.card.id)!.stage, "done");
+});
+
+test("the worktree workspace is archived only after the rating ends, and a rating that cannot start falls back at once", async () => {
+  const context = await setup({ createPr: false });
+  const dir = await gitDir();
+  context.attach();
+  const card = await context.runner.add({ workspaceId: "w", cwd: dir, title: "W" });
+  await context.runner.start(card.id);
+  await context.store.upsert({ ...context.store.get(card.id)!, prUrl: "https://pr" });
+  await context.runner.action(card.id, "complete");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const rater = context.created.at(-1);
+  assert.equal(rater.workspaceId, "wks-1");
+  assert.equal(context.archived.includes("workspace:wks-1"), false);
+  await context.runner.onTurnEnded(rater.agentId, { kind: "completed" });
+  assert.equal(context.archived.includes("workspace:wks-1"), true);
+
+  const broken = await setup({ useWorktree: false, createPr: false });
+  broken.attach();
+  const other = await broken.runner.add({ workspaceId: "w", cwd: "/x", title: "실패" });
+  await broken.runner.start(other.id);
+  broken.paseo.providers.listModels = async () => ({ models: [] });
+  await broken.runner.action(other.id, "complete");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.match(broken.store.get(other.id)!.aiRating!.reason, /평가 세션 시작 실패/);
+  assert.equal(broken.store.get(other.id)!.aiRaterId, null);
+});
+
+test("a queued card starts without waiting for the rating", async () => {
+  const context = await setup({ useWorktree: false, createPr: false });
+  context.attach();
+  const first = await context.runner.add({ workspaceId: "w", cwd: "/x", title: "먼저" });
+  const second = await context.runner.add({ workspaceId: "w", cwd: "/x", title: "다음" });
+  await context.runner.start(first.id);
+  await context.runner.start(second.id);
+  assert.equal(context.store.get(second.id)!.queued, true);
+  await context.runner.action(first.id, "complete");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(context.store.get(first.id)!.aiRaterId !== null, true);
+  assert.equal(context.store.get(second.id)!.stage, "plan");
+});
+
+test("a card nobody worked on gets no rating session", async () => {
+  const { runner, store, created, attach } = await setup({ useWorktree: false, createPr: false });
+  attach();
+  const card = await runner.add({ workspaceId: "w", cwd: "/x", title: "빈 카드" });
+  await store.upsert({ ...card, stage: "implement" });
+  await runner.action(card.id, "complete");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(created.length, 0);
+  assert.equal(store.get(card.id)!.aiRating, null);
+});
+
+test("a rating left running by a restart is collected on attach", async () => {
+  const context = await finished();
+  const rater = context.created.at(-1);
+  context.lastText.value = "점수: 2\n아쉬움";
+  const restarted = new Runner({ store: context.store, inboxDir: context.inboxDir, plansDir: context.plansDir, settings: () => boardSettings.schema.parse({}) });
+  restarted.attach(context.paseo);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(context.store.get(context.card.id)!.aiRating?.score, 2);
+  assert.equal(context.store.get(context.card.id)!.aiRaterId, null);
+  assert.equal(context.archived.includes(rater.agentId), true);
+});
+
+test("a person can rate and re-rate only a finished card, and the AI rating stays untouched", async () => {
+  const { runner, store, lastText, created, card } = await finished();
+  lastText.value = "점수: 3\n보통";
+  await runner.onTurnEnded(created.at(-1).agentId, { kind: "completed" });
+  assert.equal((await runner.rate(card.id, 5, " 좋음 "))?.userRating?.note, "좋음");
+  const again = await runner.rate(card.id, 2);
+  assert.equal(again?.userRating?.score, 2);
+  assert.equal(again?.userRating?.note, undefined);
+  assert.equal(store.get(card.id)!.aiRating?.score, 3);
+  assert.equal(await runner.rate("없음", 3), null);
+
+  const open = await runner.add({ workspaceId: "w", cwd: "/y", title: "미완료" });
+  assert.equal((await runner.rate(open.id, 5))?.userRating, null);
+});
+
+test("stepping in is recorded on the timeline; starting a card is not", async () => {
+  const { runner, store, attach } = await setup({ useWorktree: false, createPr: false });
+  attach();
+  const card = await runner.add({ workspaceId: "w", cwd: "/x", title: "개입" });
+  await runner.action(card.id, "start");
+  await runner.action(card.id, "pause");
+  await runner.action(card.id, "resume");
+  await runner.action(card.id, "advance");
+  const events = store.get(card.id)!.events;
+  assert.deepEqual(events.filter((event) => event.kind === "action").map((event) => event.detail), ["pause", "advance"]);
+  assert.deepEqual(events.filter((event) => event.kind === "stage").map((event) => event.stage), ["plan", "implement"]);
 });

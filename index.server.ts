@@ -6,7 +6,7 @@ import { boardFile, inboxDir, mcpScriptFile, plansDir } from "./server/paths.ts"
 import { Runner } from "./server/runner.ts";
 import { BoardStore } from "./server/store.ts";
 import { boardTools, CARD_LABEL } from "./server/tools.ts";
-import { addCard, cardAction, clientLog, listAllCards, listCards } from "./shared/board.ts";
+import { addCard, cardAction, clientLog, listAllCards, listCards, rateCard } from "./shared/board.ts";
 import { type BoardSettingsValues, boardSettings } from "./shared/settings.ts";
 
 export default function contribute(server: PluginServerContext) {
@@ -61,6 +61,11 @@ export default function contribute(server: PluginServerContext) {
     await ready;
     runner.attach(paseo);
     return { card: await runner.action(cardId, action) };
+  });
+  server.handle(rateCard, async ({ cardId, score, note }, { paseo }) => {
+    await ready;
+    runner.attach(paseo);
+    return { card: await runner.rate(cardId, score, note) };
   });
 
   const removers = [

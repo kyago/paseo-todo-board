@@ -41,3 +41,22 @@ test("the inbox yields valid messages in order and deletes the rest", async () =
   await consume(entries[0]);
   assert.deepEqual((await readInbox(dir)).map((entry) => entry.message.kind), ["add"]);
 });
+
+test("a stale copy cannot erase ratings or the timeline, and changes add timeline events once", async () => {
+  const store = new BoardStore(join(await mkdtemp(join(tmpdir(), "todo-store-")), "board.json"));
+  await store.load();
+  const card = await store.upsert(newCard({ workspaceId: "w", cwd: "/p", title: "t" }));
+  assert.deepEqual(card.events, []);
+  const stale = await store.upsert({ ...card, stage: "done" });
+  assert.deepEqual(stale.events.map((event) => [event.kind, event.stage]), [["stage", "done"]]);
+  await store.annotate(card.id, { userRating: { score: 4, at: "now" }, aiRaterId: "rater" });
+  const after = await store.upsert({ ...stale, prUrl: "https://pr" });
+  assert.equal(after.prUrl, "https://pr");
+  assert.equal(after.userRating?.score, 4);
+  assert.equal(after.aiRaterId, "rater");
+  assert.equal(after.events.length, 1);
+  const blocked = await store.upsert({ ...after, state: "blocked", attention: "보고 없음" });
+  assert.deepEqual(blocked.events.at(-1), { kind: "blocked", stage: "done", detail: "보고 없음", at: blocked.events.at(-1)!.at });
+  assert.equal((await store.upsert({ ...blocked, attention: "다른 사유" })).events.length, 2);
+  assert.equal(await store.annotate("없음", { aiRaterId: null }), null);
+});

@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
-import { type Card, type CardAction, type CardType, type InboxMessage, STAGE_LABELS } from "../shared/board.ts";
-import { BLOCKED_MARKER, type PromptCard, priorRounds, stagePrompt } from "../shared/prompts.ts";
+import { type Card, type CardAction, type CardType, type InboxMessage, type RunMeta, STAGE_LABELS } from "../shared/board.ts";
+import { BLOCKED_MARKER, type PromptCard, parseRating, priorRounds, ratingPrompt, stagePrompt } from "../shared/prompts.ts";
 import { rolesFor } from "../shared/roles.ts";
 import type { BoardSettingsValues } from "../shared/settings.ts";
 import { commitAll, createDraftPr, gitHead, hasRemote, isGitRepo, pushBranch } from "./git.ts";
 import { consume, readInbox } from "./inbox.ts";
+import { promptVersion } from "./prompt-version.ts";
 import { type Effect, type IncomingReport, type TurnOutcome, advance, applyReport, applyTurnEnded, newCard, rejectToImplement, responsibleAgents, retryStage, start } from "./machine.ts";
 import type { BoardStore } from "./store.ts";
 import { CARD_LABEL, STAGE_LABEL } from "./tools.ts";
@@ -38,6 +39,8 @@ export const isBoardToolRequest = (request: PermissionLike): boolean =>
 const workDir = (card: Card) => card.workCwd ?? card.cwd;
 const planName = (card: Pick<Card, "id">) => `todo-${card.id.slice(0, 8)}.md`;
 const stamp = () => new Date().toISOString();
+/** Buttons and commands that count as a person stepping in; starting and deleting a card are normal use. */
+const INTERVENTIONS: CardAction[] = ["advance", "retry", "reject", "complete", "pause"];
 
 export class Runner {
   private paseo: Paseo | null = null;
@@ -97,8 +100,30 @@ export class Runner {
     } catch (error) {
       return this.store.upsert({ ...card, state: "blocked", attention: `worktree 생성 실패: ${(error as Error).message}`, updatedAt: stamp() });
     }
-    const step = start({ ...placed, baseRef: await gitHead(workDir(placed)), queued: false });
+    const step = start({ ...placed, baseRef: await gitHead(workDir(placed)), queued: false, runMeta: await this.runMeta() });
     return this.commit(step.card, step.effect);
+  }
+
+  private async runMeta(): Promise<RunMeta> {
+    const settings = this.settings;
+    const resolved = (value: string) => this.resolveProvider(value).catch(() => value);
+    return {
+      promptVersion: promptVersion(),
+      worker: await resolved(settings.workerProvider),
+      reviewer: await resolved(settings.reviewerProvider),
+      workerMode: settings.workerMode,
+      planMode: settings.planMode,
+      reviewerMode: settings.reviewerMode,
+      reviewRoles: settings.reviewRoles,
+      qaRoles: settings.qaRoles,
+    };
+  }
+
+  /** A person's rating of a finished card; it can change later, once the result has been used. */
+  async rate(cardId: string, score: number, note?: string): Promise<Card | null> {
+    const card = this.store.get(cardId);
+    if (!card || card.stage !== "done") return card ?? null;
+    return this.store.annotate(cardId, { userRating: { score, note: note?.trim() || undefined, at: stamp() } });
   }
 
   /** A Paseo worktree on branch `todo/<id>` when the card's directory is a git repository and worktrees are on. */
@@ -119,6 +144,9 @@ export class Runner {
   async action(cardId: string, action: CardAction): Promise<Card | null> {
     const card = this.store.get(cardId);
     if (!card) return null;
+    if (INTERVENTIONS.includes(action) && card.stage !== "todo") {
+      await this.store.annotate(cardId, { events: [...card.events, { kind: "action", stage: card.stage, detail: action, at: stamp() }] });
+    }
     switch (action) {
       case "start":
         return this.start(cardId);
@@ -143,7 +171,7 @@ export class Runner {
       }
       case "delete":
         await this.store.remove(cardId);
-        void this.archiveSessions(card.sessionIds);
+        void this.archiveSessions(card.aiRaterId ? [...card.sessionIds, card.aiRaterId] : card.sessionIds);
         await this.releaseQueue(card.cwd);
         return null;
       case "pause":
@@ -155,6 +183,8 @@ export class Runner {
 
   /** A responsible session ended a turn: apply its report, or block the card when there is none. */
   async onTurnEnded(agentId: string, outcome: TurnOutcome): Promise<void> {
+    const rated = this.store.all().find((item) => item.aiRaterId === agentId);
+    if (rated) return this.finishRating(rated, agentId, outcome);
     const card = this.store.byAgent(agentId);
     if (!card || !responsibleAgents(card).includes(agentId) || card.state !== "running") {
       await this.processInbox();
@@ -300,7 +330,7 @@ export class Runner {
   private async createSession(card: Card, options: { provider: string; modeId?: string; title: string; prompt: string; labels: Record<string, string> }): Promise<string> {
     const agentId = randomUUID();
     const config = { provider: options.provider, modeId: options.modeId };
-    const common = { agentId, config, title: options.title, prompt: options.prompt, labels: { [CARD_LABEL]: card.id, ...options.labels } };
+    const common = { agentId, config, title: options.title, prompt: options.prompt, labels: options.labels };
     const agent = card.workWorkspaceId
       ? await this.api().workspaces.ref(card.workWorkspaceId).agents.create(common)
       : await this.api().agents.create({ ...common, cwd: workDir(card) });
@@ -323,7 +353,7 @@ export class Runner {
           modeId: mode,
           title: `[투두] ${card.title}`,
           prompt,
-          labels: {},
+          labels: { [CARD_LABEL]: card.id },
         });
         return { ...card, agentId, sessionIds: [...card.sessionIds, agentId] };
       }
@@ -338,7 +368,7 @@ export class Runner {
             modeId: settings.reviewerMode || undefined,
             title: `[투두 ${STAGE_LABELS[effect.stage]} · ${role.label}] ${card.title}`,
             prompt: stagePrompt(promptCard, effect.stage, { role }),
-            labels: { [STAGE_LABEL]: effect.stage, "todo-board/role": role.id },
+            labels: { [CARD_LABEL]: card.id, [STAGE_LABEL]: effect.stage, "todo-board/role": role.id },
           });
           reviewers.push({ agentId, role: role.id, label: role.label, status: null, summary: null });
         }
@@ -353,7 +383,7 @@ export class Runner {
     }
   }
 
-  /** After completion: commit and push the branch, open a draft PR, then archive the sessions (and the worktree once the PR exists). */
+  /** After completion: commit and push the branch, open a draft PR, start the AI rating, then archive the sessions (and the worktree once the PR exists and the rating is over). */
   async finish(cardId: string): Promise<void> {
     let card = this.store.get(cardId);
     if (!card) return;
@@ -368,14 +398,49 @@ export class Runner {
         card = await this.store.upsert({ ...card, attention: `PR 실패: ${(error as Error).message}`, updatedAt: stamp() });
       }
     }
+    const rating = await this.startRating(card);
     if (settings.autoArchive) {
       await this.archiveSessions(card.sessionIds);
-      if (card.prUrl && card.workWorkspaceId) {
-        await this.api().workspaces.ref(card.workWorkspaceId).archive().catch((error) => console.error("[todo-board] workspace archive", error));
-      }
+      if (!rating) await this.archiveWorkspace(card);
       card = await this.store.upsert({ ...card, sessionIds: [], updatedAt: stamp() });
     }
     await this.releaseQueue(card.cwd);
+  }
+
+  private async archiveWorkspace(card: Card): Promise<void> {
+    if (!card.prUrl || !card.workWorkspaceId) return;
+    await this.api().workspaces.ref(card.workWorkspaceId).archive().catch((error) => console.error("[todo-board] workspace archive", error));
+  }
+
+  /** A fresh session rates the result in the background; it never holds the card, its queue or its PR. A card nobody worked on has nothing to rate. */
+  private async startRating(card: Card): Promise<boolean> {
+    if (!card.agentId || card.aiRating) return false;
+    try {
+      const settings = this.settings;
+      const agentId = await this.createSession(card, {
+        provider: await this.resolveProvider(settings.reviewerProvider),
+        modeId: settings.reviewerMode || undefined,
+        title: `[투두 평가] ${card.title}`,
+        prompt: ratingPrompt(await this.promptCard(card)),
+        labels: {},
+      });
+      await this.store.annotate(card.id, { aiRaterId: agentId });
+      return true;
+    } catch (error) {
+      console.error(`[todo-board] rating for ${card.id} failed`, error);
+      await this.store.annotate(card.id, { aiRating: { score: null, reason: `평가 세션 시작 실패: ${(error as Error).message}`, at: stamp() } });
+      return false;
+    }
+  }
+
+  private async finishRating(card: Card, agentId: string, outcome: TurnOutcome): Promise<void> {
+    const text = outcome.kind === "completed" ? await this.lastText(agentId) : null;
+    const parsed = text ? parseRating(text) : null;
+    const reason = parsed?.reason ?? (outcome.kind === "failed" ? `오류: ${outcome.error.message}` : outcome.kind === "canceled" ? `취소됨: ${outcome.reason}` : `점수를 읽지 못함: ${(text ?? "").slice(0, 200)}`);
+    const after = await this.store.annotate(card.id, { aiRaterId: null, aiRating: { score: parsed?.score ?? null, reason, at: stamp() } });
+    if (!this.settings.autoArchive) return;
+    await this.archiveSessions([agentId]);
+    if (after) await this.archiveWorkspace(after);
   }
 
   private async openPr(card: Card): Promise<string> {
@@ -434,6 +499,16 @@ export class Runner {
         } catch (error) {
           await this.store.upsert({ ...card, state: "blocked", attention: `세션을 찾지 못함: ${(error as Error).message}`, updatedAt: stamp() });
         }
+      }
+    }
+    for (const card of this.store.all().filter((item) => item.aiRaterId)) {
+      const agentId = card.aiRaterId!;
+      try {
+        const handle = this.api().agents.ref(agentId);
+        await handle.refresh();
+        if (!handle.activeTurn) await this.finishRating(card, agentId, { kind: "completed" });
+      } catch (error) {
+        await this.finishRating(card, agentId, { kind: "failed", error: { message: (error as Error).message } });
       }
     }
   }

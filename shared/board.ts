@@ -47,6 +47,34 @@ export type CardState = z.infer<typeof CardStateSchema>;
 export const CardTypeSchema = z.enum(["code", "doc"]);
 export type CardType = z.infer<typeof CardTypeSchema>;
 
+/** A person's judgement of a finished card. */
+export const UserRatingSchema = z.object({ score: z.number().int().min(1).max(5), note: z.string().optional(), at: z.string() });
+/** The AI's own judgement of a finished card; `score` is null when the rating session produced none, and `reason` says why. */
+export const AiRatingSchema = z.object({ score: z.number().int().min(1).max(5).nullable(), reason: z.string(), at: z.string() });
+export type AiRating = z.infer<typeof AiRatingSchema>;
+
+/** What the card ran with, so results can be compared across prompt, model and team changes. */
+export const RunMetaSchema = z.object({
+  promptVersion: z.string(),
+  worker: z.string(),
+  reviewer: z.string(),
+  workerMode: z.string(),
+  planMode: z.string(),
+  reviewerMode: z.string(),
+  reviewRoles: z.string(),
+  qaRoles: z.string(),
+});
+export type RunMeta = z.infer<typeof RunMetaSchema>;
+
+/** Timeline for the behaviour metrics: stage entries, stops, and buttons or commands a person used to step in. */
+export const CardEventSchema = z.object({
+  kind: z.enum(["stage", "blocked", "action"]),
+  stage: StageSchema,
+  detail: z.string().optional(),
+  at: z.string(),
+});
+export type CardEvent = z.infer<typeof CardEventSchema>;
+
 export const CardSchema = z.object({
   id: z.string(),
   type: CardTypeSchema.default("code"),
@@ -77,6 +105,13 @@ export const CardSchema = z.object({
   prUrl: z.string().nullable().default(null),
   retries: z.number().int().default(0),
   reports: z.array(ReportSchema).default([]),
+  userRating: UserRatingSchema.nullable().default(null),
+  aiRating: AiRatingSchema.nullable().default(null),
+  /** The session rating this card right now. */
+  aiRaterId: z.string().nullable().default(null),
+  /** Null on cards started before this was recorded. */
+  runMeta: RunMetaSchema.nullable().default(null),
+  events: z.array(CardEventSchema).default([]),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -127,6 +162,12 @@ export const addCard = defineRpc({
 export const cardAction = defineRpc({
   name: "board.action",
   input: z.object({ cardId: z.string(), action: z.enum(CARD_ACTIONS) }),
+  output: z.object({ card: CardSchema.nullable() }),
+});
+
+export const rateCard = defineRpc({
+  name: "board.rate",
+  input: z.object({ cardId: z.string(), score: z.number().int().min(1).max(5), note: z.string().max(2000).optional() }),
   output: z.object({ card: CardSchema.nullable() }),
 });
 
