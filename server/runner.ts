@@ -50,6 +50,8 @@ export class Runner {
   private paseo: Paseo | null = null;
   private reconciled = false;
   private readonly deps: RunnerDeps;
+  /** Cards between the stage check and the first save: the inbox and the queue can both start one, and placing it takes time. */
+  private readonly starting = new Set<string>();
   /** Questions asked per team member; a restart resets them, which only allows a few more questions. */
   private readonly askCounts = new Map<string, number>();
   /** The last queued question per worker: one answer turn at a time, so answers cannot cross. */
@@ -99,7 +101,16 @@ export class Runner {
   /** The user's move: todo → plan. Gets the card a worktree (or the directory itself), then the planning turn. */
   async start(cardId: string): Promise<Card | null> {
     const card = this.store.get(cardId);
-    if (!card || card.stage !== "todo") return card ?? null;
+    if (!card || card.stage !== "todo" || this.starting.has(cardId)) return card ?? null;
+    this.starting.add(cardId);
+    try {
+      return await this.begin(card);
+    } finally {
+      this.starting.delete(cardId);
+    }
+  }
+
+  private async begin(card: Card): Promise<Card> {
     const inPlace = !this.settings.useWorktree || !(await isGitRepo(card.cwd));
     if (!this.paseo || (inPlace && this.activeIn(card.cwd, card.id))) {
       return this.store.upsert({ ...card, queued: true, updatedAt: stamp() });

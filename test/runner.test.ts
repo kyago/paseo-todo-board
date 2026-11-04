@@ -912,3 +912,13 @@ test("a shared workspace is found by id even when its directory is spelled diffe
   assert.equal(workspacesCreated.length, 0);
   assert.ok(created.length >= 3 && created.every((session: any) => session.workspaceId === "w"));
 });
+
+test("starting a card twice at once opens one worktree and one worker", async () => {
+  const { runner, attach, created, workspacesCreated } = await setup();
+  attach();
+  const card = await runner.add({ workspaceId: "w", cwd: await gitDir(), title: "두 번 시작" });
+  await Promise.all([runner.start(card.id), runner.start(card.id)]);
+  assert.equal(workspacesCreated.length, 1);
+  assert.equal(created.length, 1);
+});
+
