@@ -4,7 +4,7 @@ import { ratingPrompt, stagePrompt } from "../shared/prompts.ts";
 import { type PromptCard, ROLES } from "../shared/roles.ts";
 
 const SAMPLE: PromptCard = { id: "sample", title: "제목", detail: "상세", baseRef: "base", planPath: "/plan.md", plan: "계획", priorRounds: "이전 회차" };
-const SAMPLES: PromptCard[] = [SAMPLE, { ...SAMPLE, type: "doc" }, { ...SAMPLE, baseRef: null, plan: null, priorRounds: null }];
+const SAMPLES: PromptCard[] = [SAMPLE, { ...SAMPLE, type: "doc" }, { ...SAMPLE, baseRef: null, plan: null, priorRounds: null, repos: ["저장소"] }];
 const hash = (texts: string[]) => createHash("sha256").update(texts.join("\n")).digest("hex").slice(0, 8);
 
 /** A short hash of every work prompt as rendered in each branch, so a wording change gets a new version without anyone bumping a number. */

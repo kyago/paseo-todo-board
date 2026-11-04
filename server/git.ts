@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, constants, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, constants, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -22,6 +22,13 @@ export async function gitHead(cwd: string): Promise<string | null> {
 }
 
 export const isGitRepo = async (cwd: string): Promise<boolean> => (await gitHead(cwd)) !== null;
+
+/** Immediate child directories that are git repositories. Deeper repositories are not found; a card there works in place. */
+export async function childRepos(cwd: string): Promise<string[]> {
+  const names = await readdir(cwd).catch(() => [] as string[]);
+  const found = await Promise.all(names.map((name) => stat(join(cwd, name, ".git")).then(() => name, () => null)));
+  return found.filter((name): name is string => name !== null).sort();
+}
 
 export async function hasRemote(cwd: string): Promise<boolean> {
   try {
