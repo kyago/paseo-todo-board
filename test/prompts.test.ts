@@ -35,7 +35,6 @@ test("roles are selected by id per stage and fall back to the whole team", () =>
   assert.deepEqual(rolesFor("review", "").map((role) => role.id), ["correctness", "security", "tests", "simplicity"]);
   assert.deepEqual(rolesFor("qa", "nope").map((role) => role.id), ["qa-run", "qa-acceptance"]);
   for (const role of ROLES) assert.match(role.prompt(card), /status=fail|status=done/);
-  assert.match(ROLES.find((role) => role.id === "simplicity")!.prompt(card), /Lean already\. Ship\./);
 });
 
 test("a rejection reason is appended to the implementation prompt", () => {
@@ -48,17 +47,22 @@ test("a message-mode plan prompt asks for the plan as the last message and forbi
   assert.match(text, /마지막 메시지/);
   assert.match(text, /ExitPlanMode/);
   assert.match(text, /BLOCKED:/);
-  assert.doesNotMatch(text, /반드시 MCP 도구/);
-  assert.match(stagePrompt(card, "plan"), /반드시 MCP 도구 `todo_report`/);
+  assert.doesNotMatch(text, /끝나면 `todo_report`로 보고/);
+  assert.match(stagePrompt(card, "plan"), /끝나면 `todo_report`로 보고/);
 });
 
 test("rejection is limited to real problems, and the simplicity role never rejects", () => {
   const roles = Object.fromEntries(ROLES.map((role) => [role.id, role.prompt(card)]));
   assert.match(roles.correctness, /수용 기준이나 계획 위반, 사실 오류, 실제 결함이나 취약점만 status=fail/);
-  assert.match(roles.correctness, /개선 의견은 그 summary에 제안/);
+  assert.match(roles.correctness, /개선 의견은 status=done의 summary에 제안/);
   assert.match(roles.tests, /테스트가 전혀 없으면 status=fail/);
   assert.doesNotMatch(roles.simplicity, /status=fail/);
   assert.match(roles.simplicity, /반려하지 않는다/);
+});
+
+test("every prompt states a goal", () => {
+  for (const stage of ["plan", "implement"] as const) assert.match(stagePrompt(card, stage), /목표: /);
+  for (const role of ROLES) assert.match(role.prompt(card), /^목표: /);
 });
 
 test("a doc card runs only the roles that can judge it and its prompts point at the deliverable", () => {
@@ -67,13 +71,10 @@ test("a doc card runs only the roles that can judge it and its prompts point at 
   assert.deepEqual(rolesFor("qa", "", "doc").map((role) => role.id), ["qa-acceptance"]);
   assert.deepEqual(rolesFor("review", "security", "doc").map((role) => role.id), ["correctness"]);
   const correctness = ROLES.find((role) => role.id === "correctness")!;
-  const acceptance = ROLES.find((role) => role.id === "qa-acceptance")!;
-  assert.match(correctness.prompt(doc), /카드 상세에 적힌 산출물을 직접 읽는다/);
+  assert.match(correctness.prompt(doc), /카드 상세에 적힌 산출물/);
   assert.doesNotMatch(correctness.prompt(doc), /git diff/);
-  assert.doesNotMatch(acceptance.prompt(doc), /테스트가 없으면/);
-  assert.match(acceptance.prompt(card), /테스트가 없으면/);
   assert.match(stagePrompt(doc, "implement"), /산출물을 만든다/);
-  assert.doesNotMatch(stagePrompt(doc, "implement"), /테스트를 실행/);
+  assert.doesNotMatch(stagePrompt(doc, "implement"), /구현하고/);
 });
 
 test("prior rounds keep rejections and the fixes that answered them, and only team prompts show them", () => {

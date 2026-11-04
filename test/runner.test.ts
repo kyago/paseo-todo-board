@@ -115,7 +115,7 @@ test("review fans out one session per enabled role; the card moves once every me
   assert.equal(created[1].config.provider, "codex/codex-default");
   assert.equal(created[1].config.modeId, "full-access");
   assert.match(created[1].title, /검토 · 보안/);
-  assert.match(created[2].prompt, /net: -N lines possible/);
+  assert.match(created[2].prompt, /불필요한 복잡도/);
   const [security, simplicity] = current.reviewers.map((r) => r.agentId);
 
   // Both report into the same inbox; each turn end only consumes its own report.
