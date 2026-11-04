@@ -11,9 +11,9 @@ test("the store round-trips cards through its JSON file and lists by workspace o
   const dir = await mkdtemp(join(tmpdir(), "todo-board-"));
   const store = new BoardStore(join(dir, "board.json"));
   await store.load();
-  const a = await store.upsert(newCard({ workspaceId: "w1", cwd: "/p", title: "a" }));
-  const b = await store.upsert({ ...newCard({ workspaceId: null, cwd: "/p", title: "b" }), agentId: "ag" });
-  await store.upsert(newCard({ workspaceId: "w2", cwd: "/q", title: "c" }));
+  const a = await store.add(newCard({ workspaceId: "w1", cwd: "/p", title: "a" }));
+  const b = await store.add({ ...newCard({ workspaceId: null, cwd: "/p", title: "b" }), agentId: "ag" });
+  await store.add(newCard({ workspaceId: "w2", cwd: "/q", title: "c" }));
   const again = new BoardStore(join(dir, "board.json"));
   await again.load();
   assert.deepEqual(again.list("w1", "/p").map((card) => card.title), ["a", "b"]);
@@ -45,7 +45,7 @@ test("the inbox yields valid messages in order and deletes the rest", async () =
 test("a stale copy cannot erase ratings or the timeline, and changes add timeline events once", async () => {
   const store = new BoardStore(join(await mkdtemp(join(tmpdir(), "todo-store-")), "board.json"));
   await store.load();
-  const card = await store.upsert(newCard({ workspaceId: "w", cwd: "/p", title: "t" }));
+  const card = await store.add(newCard({ workspaceId: "w", cwd: "/p", title: "t" }));
   assert.deepEqual(card.events, []);
   const stale = await store.upsert({ ...card, stage: "done" });
   assert.deepEqual(stale.events.map((event) => [event.kind, event.stage]), [["stage", "done"]]);
@@ -59,4 +59,7 @@ test("a stale copy cannot erase ratings or the timeline, and changes add timelin
   assert.deepEqual(blocked.events.at(-1), { kind: "blocked", stage: "done", detail: "보고 없음", at: blocked.events.at(-1)!.at });
   assert.equal((await store.upsert({ ...blocked, attention: "다른 사유" })).events.length, 2);
   assert.equal(await store.annotate("없음", { aiRaterId: null }), null);
+  await store.remove(card.id);
+  await store.upsert(blocked);
+  assert.equal(store.get(card.id), undefined);
 });

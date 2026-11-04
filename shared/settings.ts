@@ -9,9 +9,11 @@ export const boardSettings = defineSettings({
     // How many times a review or QA rejection sends the card back to implementation before a person must look.
     // Give every session the `todo_add` / `todo_start` tools. Board-created sessions always get them plus `todo_report`.
     injectTools: z.boolean().default(true),
-    maxRetries: z.number().int().min(0).max(5).default(2),
+    maxRetries: z.number().int().min(0).max(5).default(1),
     // Off: reports are recorded but no stage transition happens without a button press.
     autoAdvance: z.boolean().default(true),
+    // A fresh session scores each finished card, for comparing with the person's rating. Costs one session per card.
+    aiRating: z.boolean().default(true),
     // `provider` or `provider/model` for the session that plans and implements.
     workerProvider: z.string().min(1).default("claude"),
     // `provider` or `provider/model` for the fresh sessions that review and verify.
@@ -30,7 +32,7 @@ export const boardSettings = defineSettings({
     autoArchive: z.boolean().default(true),
     reviewerMode: z.string().default("full-access"),
     // Comma-separated role ids from shared/roles.ts; an empty or unknown list means every role of that stage.
-    reviewRoles: z.string().default("correctness,security,tests,simplicity"),
+    reviewRoles: z.string().default("correctness,security,tests"),
     qaRoles: z.string().default("qa-run,qa-acceptance"),
   }),
 });

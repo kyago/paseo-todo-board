@@ -1,4 +1,4 @@
-import type { AgentStage, CardType } from "./board.ts";
+import type { AgentStage, CardType, Report } from "./board.ts";
 
 export interface PromptCard {
   id: string;
@@ -14,7 +14,7 @@ export interface PromptCard {
   priorRounds?: string | null;
 }
 
-export const scope = (card: PromptCard) => (card.type === "doc" ? "범위: 카드 상세에 적힌 산출물" : card.baseRef ? `범위: \`git diff ${card.baseRef}\`` : "범위: 작업 트리의 변경 파일 전체");
+export const scope = (card: PromptCard) => (card.type === "doc" ? "범위: 카드 상세에 적힌 산출물" : card.baseRef ? `범위: \`git diff ${card.baseRef}\`와 \`git status\`의 새 파일` : "범위: 작업 트리의 변경 파일 전체");
 const NO_EDIT = "코드를 수정하지 않는다.";
 const VERDICT = `${NO_EDIT} 수용 기준이나 계획 위반, 사실 오류, 실제 결함이나 취약점만 status=fail에 수정 목록으로 보고하고, 그 밖의 개선 의견은 status=done의 summary에 제안으로 적는다.`;
 /** The plan as a quoted section; prompts that compare work against the plan include it in full. */
@@ -49,12 +49,6 @@ export const ROLES: Role[] = [
       ["목표: 변경된 동작이 테스트로 검증되는지 확인한다.", scope(card), `${NO_EDIT} 변경된 동작에 테스트가 전혀 없으면 status=fail에 추가할 테스트 목록을 보고하고, 그 밖의 의견은 status=done의 summary에 제안으로 적는다.`].join("\n"),
   },
   {
-    id: "simplicity",
-    label: "오버엔지니어링",
-    stage: "review",
-    prompt: (card) => ["목표: 불필요한 복잡도를 찾아 제안한다.", scope(card), `${NO_EDIT} 이 역할은 반려하지 않는다. 항상 status=done으로 보고하고 결과는 summary에 적는다.`].join("\n"),
-  },
-  {
     id: "qa-run",
     label: "테스트·린트·타입체크 실행",
     stage: "qa",
@@ -77,4 +71,16 @@ export function rolesFor(stage: Role["stage"], enabled: string, type: CardType =
   const team = ROLES.filter((role) => role.stage === stage && (type === "code" || DOC_ROLES.has(role.id)));
   const chosen = team.filter((role) => ids.includes(role.id));
   return chosen.length > 0 ? chosen : team;
+}
+
+/**
+ * A repeat review runs correctness plus the roles that failed last round. A full team finds something new every round,
+ * which keeps cards looping and grows the work. The first round, and a team with nothing left, runs in full.
+ */
+export function recheckRoles(roles: Role[], reports: Report[]): Role[] {
+  const implemented = reports.flatMap((report, index) => (report.stage === "implement" ? [index] : []));
+  if (implemented.length < 2) return roles;
+  const failed = reports.slice(implemented.at(-2)! + 1, implemented.at(-1)).filter((report) => report.stage === "review" && report.status === "fail").map((report) => report.role);
+  const chosen = roles.filter((role) => role.id === "correctness" || failed.includes(role.label));
+  return chosen.length > 0 ? chosen : roles;
 }

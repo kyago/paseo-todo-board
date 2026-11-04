@@ -3,7 +3,7 @@ import { ExternalLink } from "@getpaseo/plugin/client/ui";
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { type Card, type CardAction, type ReportStatus, STAGE_LABELS, STAGES } from "../shared/board";
-import { cardMetrics, summarize } from "../shared/metrics";
+import { cardMetrics } from "../shared/metrics";
 
 export type PluginTheme = PluginScreenProps["theme"];
 type Colors = PluginTheme["colors"];
@@ -73,15 +73,15 @@ const makeStyles = (theme: PluginTheme, compact: boolean) => ({
 });
 
 const SCORES = [1, 2, 3, 4, 5];
-const average = (value: number | null) => (value === null ? "-" : value.toFixed(1));
 
 /** The behaviour metrics of a finished card. */
 function metricsLines(card: Card): string[] {
   const metrics = cardMetrics(card);
-  const fails = Object.entries(metrics.failsByRole).map(([role, count]) => `${role} ${count}`).join(", ");
+  const fails = Object.entries(metrics.failsByRole).map(([role, count]) => `${STAGE_LABELS[role as keyof typeof STAGE_LABELS] ?? role} ${count}`).join(", ");
   const stages = Object.entries(metrics.stageMinutes).map(([stage, minutes]) => `${STAGE_LABELS[stage as keyof typeof STAGE_LABELS]} ${minutes}분`).join(" · ");
+  const closed = metrics.completedBy === "qa" ? " · QA 통과" : metrics.completedBy === "manual" ? " · 수동 완료" : "";
   return [
-    `반려 ${metrics.retries} · 차단 ${metrics.blocked} · 수동 ${metrics.manual}${metrics.minutes === null ? "" : ` · ${metrics.minutes}분`}`,
+    `반려 ${metrics.retries} · 차단 ${metrics.blocked} · 수동 ${metrics.manual}${metrics.minutes === null ? "" : ` · ${metrics.minutes}분`}${closed}`,
     fails ? `fail: ${fails}` : null,
     stages || null,
   ].filter((line): line is string => line !== null);
@@ -91,8 +91,8 @@ function metricsLines(card: Card): string[] {
 function aiRatingText(card: Card): string | null {
   if (card.aiRaterId) return "AI 평가 중";
   if (!card.aiRating) return null;
-  if (!card.userRating) return "AI 평가 완료 (내 평가 후 공개)";
-  return card.aiRating.score === null ? `AI 평가 실패: ${card.aiRating.reason}` : `AI 평가 ${card.aiRating.score}점: ${card.aiRating.reason}`;
+  if (card.aiRating.score === null) return `AI 평가 실패: ${card.aiRating.reason}`;
+  return card.userRating ? `AI 평가 ${card.aiRating.score}점: ${card.aiRating.reason}` : "AI 평가 완료 (내 평가 후 공개)";
 }
 
 function RatingRow({ card, theme, styles, onRate }: { card: Card; theme: PluginTheme; styles: ReturnType<typeof makeStyles>; onRate: BoardViewProps["onRate"] }) {
@@ -189,11 +189,6 @@ export function BoardView({ theme, compact, cards, onAdd, onAction, onRate, show
         </Pressable>
       </View>
       {error ? <Text style={styles.error}>{error instanceof Error ? error.message : String(error)}</Text> : null}
-      {summarize(cards).map((row) => (
-        <Text key={row.version} style={styles.meta}>
-          프롬프트 {row.version} · 완료 {row.done} · 내 평가 {average(row.user)}({row.userCount}) · AI {average(row.ai)}({row.bothCount}) · 차이 {average(row.gap)} · 반려 {average(row.retries)} · 차단 {average(row.blocked)} · 수동 {average(row.manual)} · 평균 {average(row.minutes)}분
-        </Text>
-      ))}
       <ScrollView horizontal={!compact} contentContainerStyle={styles.board}>
         {STAGES.map((stage, index) => {
           const column = cards.filter((card) => card.stage === stage);

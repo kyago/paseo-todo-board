@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { newCard } from "../server/machine.ts";
 import type { Card } from "../shared/board.ts";
-import { cardMetrics, summarize } from "../shared/metrics.ts";
+import { cardMetrics } from "../shared/metrics.ts";
 
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 4, 0, minute)).toISOString();
 const done = (extra: Partial<Card> = {}): Card => ({
@@ -19,7 +19,6 @@ const done = (extra: Partial<Card> = {}): Card => ({
   ],
   ...extra,
 });
-const meta = (promptVersion: string) => ({ promptVersion, worker: "w", reviewer: "r", workerMode: "", planMode: "", reviewerMode: "", reviewRoles: "", qaRoles: "" });
 
 test("a finished card's metrics count stops and interventions and add up revisited stages", () => {
   const reports = [
@@ -41,25 +40,10 @@ test("a card without a timeline or still running has no duration", () => {
   assert.equal(cardMetrics(done({ events: [{ kind: "stage", stage: "plan", at: at(0) }] })).minutes, null);
 });
 
-test("the summary groups by prompt version and only shows AI scores the person has also rated", () => {
-  const user = (score: number) => ({ score, at: at(0) });
-  const ai = (score: number | null) => ({ score, reason: "", at: at(0) });
-  const rows = summarize([
-    done({ runMeta: meta("a"), userRating: user(5), aiRating: ai(3) }),
-    done({ runMeta: meta("a"), userRating: user(2), aiRating: ai(null) }),
-    done({ runMeta: meta("a"), aiRating: ai(1) }),
-    done({ runMeta: meta("b") }),
-    done(),
-    { ...done({ runMeta: meta("c") }), stage: "review" },
-  ]);
-  assert.deepEqual(rows.map((row) => row.version).sort(), ["a", "b", "기록 전"]);
-  const a = rows.find((row) => row.version === "a")!;
-  assert.equal(a.done, 3);
-  assert.equal(a.user, 3.5);
-  assert.equal(a.userCount, 2);
-  assert.equal(a.ai, 3);
-  assert.equal(a.bothCount, 1);
-  assert.equal(a.gap, 2);
-  assert.equal(a.minutes, 10);
-  assert.equal(rows.find((row) => row.version === "b")!.user, null);
+test("a timeline that starts partway has no total, and the card says who finished it", () => {
+  assert.equal(cardMetrics(done({ events: [{ kind: "stage", stage: "qa", at: at(0) }, { kind: "stage", stage: "done", at: at(5) }] })).minutes, null);
+  assert.equal(cardMetrics(done()).completedBy, "qa");
+  const manual = done({ events: [{ kind: "stage", stage: "plan", at: at(0) }, { kind: "action", stage: "plan", detail: "complete", at: at(1) }, { kind: "stage", stage: "done", at: at(1) }] });
+  assert.equal(cardMetrics(manual).completedBy, "manual");
+  assert.equal(cardMetrics(newCard({ workspaceId: "w", cwd: "/p", title: "t" })).completedBy, null);
 });

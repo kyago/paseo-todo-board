@@ -46,13 +46,22 @@ export class BoardStore {
     return this.cards.find((card) => card.agentId === agentId || card.reviewers.some((reviewer) => reviewer.agentId === agentId));
   }
 
-  /** Ratings and the timeline change only through `annotate`, so a copy read before a long await (a PR push) cannot erase them. */
+  async add(card: Card): Promise<Card> {
+    this.cards.push(card);
+    await this.save();
+    return card;
+  }
+
+  /**
+   * Ratings and the timeline change only through `annotate`, so a copy read before a long await (a PR push) cannot erase them.
+   * A card deleted during that await stays deleted.
+   */
   async upsert(card: Card): Promise<Card> {
     const index = this.cards.findIndex((item) => item.id === card.id);
+    if (index === -1) return card;
     const prev = this.cards[index];
-    const next = prev ? { ...card, userRating: prev.userRating, aiRating: prev.aiRating, aiRaterId: prev.aiRaterId, events: [...prev.events, ...transitions(prev, card)] } : card;
-    if (index === -1) this.cards.push(next);
-    else this.cards[index] = next;
+    const next = { ...card, userRating: prev.userRating, aiRating: prev.aiRating, aiRaterId: prev.aiRaterId, events: [...prev.events, ...transitions(prev, card)] };
+    this.cards[index] = next;
     await this.save();
     return next;
   }

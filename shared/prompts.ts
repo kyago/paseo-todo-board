@@ -70,14 +70,17 @@ export function ratingPrompt(card: PromptCard): string {
   ].join("\n\n");
 }
 
-const SCORE_LINE = /^[*_#> \t]*점수[*_ \t]*[:：][*_ \t]*([1-5])(?![\d.])/;
+// The score may be followed by 점, /5 or a reason, but not by anything that makes it part of a scale ("5점 만점에 4", "1~5", "4.5", "4-5").
+const SCORE_LINE = /^[-*_#> \t]*점수[*_ \t]*[:：][*_ \t]*([1-5])(?:점|\s*\/\s*5)?(?![.]\d)(?!\s*(?:만점|[-~–]\s*\d))(?=$|[\s*_.,;:—–-])[*_ \t.,;:—–-]*(.*)$/;
 
 /** The score and reason in a rating session's last message; null when no line holds a valid score. */
 export function parseRating(text: string): { score: number; reason: string } | null {
   const lines = text.split("\n");
   const index = lines.findIndex((line) => SCORE_LINE.test(line));
   if (index < 0) return null;
-  return { score: Number(lines[index].match(SCORE_LINE)![1]), reason: lines.filter((_, at) => at !== index).join("\n").replace(/^(?:\s*[-*_]{3,}\s*\n)+/, "").trim() };
+  const [, score, rest] = lines[index].match(SCORE_LINE)!;
+  const reason = lines.flatMap((line, at) => (at !== index ? [line] : rest ? [rest] : [])).join("\n");
+  return { score: Number(score), reason: reason.replace(/^(?:\s*[-*_]{3,}\s*\n)+/, "").trim() };
 }
 
 /** The prompt for a stage; review and QA prompts come from the team member's role. */

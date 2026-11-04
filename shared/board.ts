@@ -48,7 +48,14 @@ export const CardTypeSchema = z.enum(["code", "doc"]);
 export type CardType = z.infer<typeof CardTypeSchema>;
 
 /** A person's judgement of a finished card. */
-export const UserRatingSchema = z.object({ score: z.number().int().min(1).max(5), note: z.string().optional(), at: z.string() });
+export const UserRatingSchema = z.object({
+  score: z.number().int().min(1).max(5),
+  note: z.string().optional(),
+  /** When the score last changed; editing the note keeps it. */
+  at: z.string(),
+  /** The first score, given before the AI's score was shown; later changes never touch it. */
+  first: z.object({ score: z.number(), at: z.string() }).optional(),
+});
 /** The AI's own judgement of a finished card; `score` is null when the rating session produced none, and `reason` says why. */
 export const AiRatingSchema = z.object({ score: z.number().int().min(1).max(5).nullable(), reason: z.string(), at: z.string() });
 export type AiRating = z.infer<typeof AiRatingSchema>;
@@ -56,6 +63,8 @@ export type AiRating = z.infer<typeof AiRatingSchema>;
 /** What the card ran with, so results can be compared across prompt, model and team changes. */
 export const RunMetaSchema = z.object({
   promptVersion: z.string(),
+  /** The rating prompt has its own version: changing how work is judged is not changing the work. */
+  ratingVersion: z.string().optional(),
   worker: z.string(),
   reviewer: z.string(),
   workerMode: z.string(),

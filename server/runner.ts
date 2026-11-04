@@ -4,11 +4,11 @@ import { dirname, join } from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { type Card, type CardAction, type CardType, type InboxMessage, type RunMeta, STAGE_LABELS } from "../shared/board.ts";
 import { BLOCKED_MARKER, type PromptCard, parseRating, priorRounds, ratingPrompt, stagePrompt } from "../shared/prompts.ts";
-import { rolesFor } from "../shared/roles.ts";
+import { recheckRoles, rolesFor } from "../shared/roles.ts";
 import type { BoardSettingsValues } from "../shared/settings.ts";
 import { commitAll, createDraftPr, gitHead, hasRemote, isGitRepo, pushBranch } from "./git.ts";
 import { consume, readInbox } from "./inbox.ts";
-import { promptVersion } from "./prompt-version.ts";
+import { promptVersion, ratingVersion } from "./prompt-version.ts";
 import { type Effect, type IncomingReport, type TurnOutcome, advance, applyReport, applyTurnEnded, newCard, rejectToImplement, responsibleAgents, retryStage, start } from "./machine.ts";
 import type { BoardStore } from "./store.ts";
 import { CARD_LABEL, STAGE_LABEL } from "./tools.ts";
@@ -77,13 +77,13 @@ export class Runner {
     return this.settings.planMode === "plan";
   }
 
-  /** In-place cards share a working tree, so only one runs per directory. Worktree cards do not collide. */
+  /** In-place cards share a working tree, so only one runs per directory, and a card being rated still owns it. Worktree cards do not collide. */
   private activeIn(cwd: string, except?: string): boolean {
-    return this.store.all().some((card) => card.cwd === cwd && card.id !== except && card.state === "running" && card.workCwd === card.cwd);
+    return this.store.all().some((card) => card.cwd === cwd && card.id !== except && (card.state === "running" || card.aiRaterId !== null) && card.workCwd === card.cwd);
   }
 
   async add(input: { workspaceId: string | null; cwd: string; title: string; detail?: string; type?: CardType }): Promise<Card> {
-    return this.store.upsert(newCard(input));
+    return this.store.add(newCard(input));
   }
 
   /** The user's move: todo → plan. Gets the card a worktree (or the directory itself), then the planning turn. */
@@ -109,6 +109,7 @@ export class Runner {
     const resolved = (value: string) => this.resolveProvider(value).catch(() => value);
     return {
       promptVersion: promptVersion(),
+      ratingVersion: ratingVersion(),
       worker: await resolved(settings.workerProvider),
       reviewer: await resolved(settings.reviewerProvider),
       workerMode: settings.workerMode,
@@ -123,7 +124,9 @@ export class Runner {
   async rate(cardId: string, score: number, note?: string): Promise<Card | null> {
     const card = this.store.get(cardId);
     if (!card || card.stage !== "done") return card ?? null;
-    return this.store.annotate(cardId, { userRating: { score, note: note?.trim() || undefined, at: stamp() } });
+    const prev = card.userRating;
+    const at = prev?.score === score ? prev.at : stamp();
+    return this.store.annotate(cardId, { userRating: { score, note: note?.trim() || undefined, at, first: prev?.first ?? { score: prev?.score ?? score, at: prev?.at ?? at } } });
   }
 
   /** A Paseo worktree on branch `todo/<id>` when the card's directory is a git repository and worktrees are on. */
@@ -142,10 +145,15 @@ export class Runner {
   }
 
   async action(cardId: string, action: CardAction): Promise<Card | null> {
-    const card = this.store.get(cardId);
+    let card = this.store.get(cardId);
     if (!card) return null;
+    if (card.stage === "done" && action !== "delete") return card;
     if (INTERVENTIONS.includes(action) && card.stage !== "todo") {
       await this.store.annotate(cardId, { events: [...card.events, { kind: "action", stage: card.stage, detail: action, at: stamp() }] });
+      // The save gave other events a turn: act on what the card is now, not on the copy read above.
+      card = this.store.get(cardId);
+      if (!card) return null;
+      if (card.stage === "done") return card;
     }
     switch (action) {
       case "start":
@@ -172,6 +180,8 @@ export class Runner {
       case "delete":
         await this.store.remove(cardId);
         void this.archiveSessions(card.aiRaterId ? [...card.sessionIds, card.aiRaterId] : card.sessionIds);
+        // finishRating would have archived the workspace, but it no longer finds the card.
+        if (card.aiRaterId && this.settings.autoArchive) void this.archiveWorkspace(card);
         await this.releaseQueue(card.cwd);
         return null;
       case "pause":
@@ -213,7 +223,8 @@ export class Runner {
     }
     if (latest) {
       if (card.stage === "plan" && latest.status === "done") await this.ensurePlanFile(card, latest.summary);
-      const step = applyReport(card, latest, this.settings, agentId);
+      // Team members end turns concurrently; apply to the card as it is now so no member's report is overwritten.
+      const step = applyReport(this.store.get(card.id) ?? card, latest, this.settings, agentId);
       const after = await this.commit(step.card, step.effect);
       // A team member is done once it has reported; it goes away at once instead of waiting for the card to complete.
       if (this.settings.autoArchive && card.reviewers.some((reviewer) => reviewer.agentId === agentId)) {
@@ -223,7 +234,8 @@ export class Runner {
       }
       return;
     }
-    await this.store.upsert(applyTurnEnded(card, outcome, await this.lastText(agentId), agentId));
+    const text = await this.lastText(agentId);
+    await this.store.upsert(applyTurnEnded(this.store.get(card.id) ?? card, outcome, text, agentId));
   }
 
   /**
@@ -359,7 +371,8 @@ export class Runner {
       }
       case "create": {
         const provider = await this.resolveProvider(settings.reviewerProvider);
-        const roles = rolesFor(effect.stage, effect.stage === "review" ? settings.reviewRoles : settings.qaRoles, card.type);
+        const team = rolesFor(effect.stage, effect.stage === "review" ? settings.reviewRoles : settings.qaRoles, card.type);
+        const roles = effect.stage === "review" ? recheckRoles(team, card.reports) : team;
         const promptCard = await this.promptCard(card);
         const reviewers = [];
         for (const role of roles) {
@@ -414,7 +427,7 @@ export class Runner {
 
   /** A fresh session rates the result in the background; it never holds the card, its queue or its PR. A card nobody worked on has nothing to rate. */
   private async startRating(card: Card): Promise<boolean> {
-    if (!card.agentId || card.aiRating) return false;
+    if (!this.settings.aiRating || !card.agentId || card.aiRating) return false;
     try {
       const settings = this.settings;
       const agentId = await this.createSession(card, {
@@ -424,8 +437,10 @@ export class Runner {
         prompt: ratingPrompt(await this.promptCard(card)),
         labels: {},
       });
-      await this.store.annotate(card.id, { aiRaterId: agentId });
-      return true;
+      if (await this.store.annotate(card.id, { aiRaterId: agentId })) return true;
+      // Deleted while the session was starting: nothing would ever collect it.
+      await this.archiveSessions([agentId]);
+      return false;
     } catch (error) {
       console.error(`[todo-board] rating for ${card.id} failed`, error);
       await this.store.annotate(card.id, { aiRating: { score: null, reason: `평가 세션 시작 실패: ${(error as Error).message}`, at: stamp() } });
@@ -438,9 +453,11 @@ export class Runner {
     const parsed = text ? parseRating(text) : null;
     const reason = parsed?.reason ?? (outcome.kind === "failed" ? `오류: ${outcome.error.message}` : outcome.kind === "canceled" ? `취소됨: ${outcome.reason}` : `점수를 읽지 못함: ${(text ?? "").slice(0, 200)}`);
     const after = await this.store.annotate(card.id, { aiRaterId: null, aiRating: { score: parsed?.score ?? null, reason, at: stamp() } });
-    if (!this.settings.autoArchive) return;
-    await this.archiveSessions([agentId]);
-    if (after) await this.archiveWorkspace(after);
+    if (this.settings.autoArchive) {
+      await this.archiveSessions([agentId]);
+      if (after) await this.archiveWorkspace(after);
+    }
+    await this.releaseQueue(card.cwd);
   }
 
   private async openPr(card: Card): Promise<string> {
@@ -488,6 +505,7 @@ export class Runner {
     await this.processInbox();
     // Only cards that were already running before this session arrived can have missed a turn end.
     const stale = this.store.all().filter((card) => card.state === "running");
+    const rating = this.store.all().filter((card) => card.aiRaterId);
     for (const cwd of new Set(this.store.all().filter((card) => card.queued).map((card) => card.cwd))) await this.releaseQueue(cwd);
     for (const card of stale) {
       for (const agentId of responsibleAgents(card)) {
@@ -501,7 +519,7 @@ export class Runner {
         }
       }
     }
-    for (const card of this.store.all().filter((item) => item.aiRaterId)) {
+    for (const card of rating) {
       const agentId = card.aiRaterId!;
       try {
         const handle = this.api().agents.ref(agentId);

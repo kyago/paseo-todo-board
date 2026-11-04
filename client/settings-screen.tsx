@@ -29,6 +29,12 @@ export function BoardSettingsScreen() {
           onValueChange={(autoAdvance) => save({ autoAdvance })}
         />
         <SettingsSwitch
+          label="완료 카드 AI 평가"
+          hint="완료 후 새 세션이 결과물을 1~5점으로 평가합니다. 카드마다 세션이 하나 늘어납니다."
+          value={values.aiRating}
+          onValueChange={(aiRating) => save({ aiRating })}
+        />
+        <SettingsSwitch
           label="모든 세션에 todo_add·todo_start·todo_complete 도구 주입"
           hint="세션에서 '할 일로 남겨 줘'라고 하면 에이전트가 보드에 카드를 추가할 수 있습니다. 플러그인 설치 뒤 새로 만든 세션에만 적용됩니다."
           value={values.injectTools}
