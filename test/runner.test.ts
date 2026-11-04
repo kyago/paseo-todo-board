@@ -18,7 +18,7 @@ function fakePaseo() {
   const lastText = { value: "마지막 답" };
   const workspaceEntries: any[] = [];
   const asked: { agentId: string; text: string; options: any }[] = [];
-  const worker = { active: false, results: [] as any[], waited: [] as any[], onRun: async () => {} };
+  const worker = { active: false, tail: [] as any[], results: [] as any[], waited: [] as any[], onRun: async () => {}, onRefresh: () => {} };
   const agentsApi = (workspaceId: string | null) => ({
     create: async (options: any) => {
       created.push({ ...options, workspaceId });
@@ -39,16 +39,18 @@ function fakePaseo() {
         },
         waitForFinish: async () => worker.waited.shift() ?? { status: "idle", final: null, error: null, lastMessage: "거절 뒤 답" },
         send: async (text: string, options: any) => void sent.push({ agentId, text, options }),
-        refresh: async () => null,
+        refresh: async () => void worker.onRefresh(),
         archive: async () => void archived.push(agentId),
-        timeline: { refetch: async () => ({ entries: [{ item: { type: "assistant_message", text: lastText.value } }] }) },
+        timeline: { refetch: async () => ({ entries: [{ item: { type: "assistant_message", text: lastText.value } }, ...worker.tail.map((item) => ({ item }))] }) },
       }),
     },
     workspaces: {
       list: async () => ({ entries: workspaceEntries }),
       create: async (options: any) => {
         workspacesCreated.push(options);
-        return { id: `wks-${workspacesCreated.length}`, directory: options.source.cwd, refresh: async () => null };
+        const id = `wks-${workspacesCreated.length}`;
+        if (options.source.kind === "directory") workspaceEntries.push({ id, workspaceDirectory: options.source.path });
+        return { id, directory: options.source.cwd, refresh: async () => null };
       },
       ref: (workspaceId: string) => ({ agents: agentsApi(workspaceId), archive: async () => void archived.push(`workspace:${workspaceId}`) }),
     },
@@ -793,4 +795,120 @@ test("while answering, the worker's permission prompts are declined and its turn
   assert.match(during ?? "", /답/);
   assert.equal(result.text, "거절 뒤 답");
   assert.equal(runner.permissionDecision(workerId, { name: "Edit" }), null);
+});
+
+test("a stage prompt replacing an answer turn: the cancel does not block the card, prompts reach the user, the asker gets no stage text", async () => {
+  const { runner, store, sent, worker, cardId, workerId } = await reviewing();
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  worker.onRun = () => gate;
+  const ask = runner.askWorker(cardId, "r1", "질문");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await runner.action(cardId, "reject");
+  assert.match(sent.at(-1)!.text, /현재 단계: 구현/);
+  await runner.onTurnEnded(workerId, { kind: "canceled", reason: "replace" });
+  assert.equal(store.get(cardId)!.state, "running");
+  assert.equal(runner.permissionDecision(workerId, { name: "Edit" }), null);
+  // The wait runs on through the implementation turn, which ends in a stage report rather than an answer.
+  worker.results.push({ status: "idle", final: null, error: null, lastMessage: "구현 보고" });
+  release();
+  const result = await ask;
+  assert.equal(result.isError, true);
+  assert.doesNotMatch(result.text, /구현 보고/);
+});
+
+test("an answer turn that outlives its wait keeps declining prompts until its turn ends", async () => {
+  const { runner, store, worker, cardId, workerId } = await reviewing();
+  worker.results.push({ status: "timeout", final: null, error: null, lastMessage: null });
+  assert.equal((await runner.askWorker(cardId, "r1", "느린 질문")).isError, true);
+  assert.notEqual(runner.permissionDecision(workerId, { name: "Edit" }), null);
+  // A question that finds the worker busy does not end the open turn's declining.
+  worker.active = true;
+  assert.equal((await runner.askWorker(cardId, "r2", "다음 질문")).isError, true);
+  assert.notEqual(runner.permissionDecision(workerId, { name: "Edit" }), null);
+  await runner.onTurnEnded(workerId, { kind: "completed" });
+  assert.equal(runner.permissionDecision(workerId, { name: "Edit" }), null);
+  assert.equal(store.get(cardId)!.stage, "review");
+});
+
+test("a denial still landing does not use up the wait", async () => {
+  const { runner, worker, cardId } = await reviewing();
+  const pending = { status: "permission", final: null, error: null, lastMessage: null };
+  worker.results.push(pending);
+  worker.waited.push(pending, pending, pending, pending);
+  assert.equal((await runner.askWorker(cardId, "r1", "질문")).text, "거절 뒤 답");
+});
+
+test("a turn that said nothing does not pass off the previous message as its answer", async () => {
+  const { runner, worker, cardId } = await reviewing();
+  worker.tail = [{ type: "user_message", text: "질문" }];
+  worker.results.push({ status: "idle", final: null, error: null, lastMessage: "구현 보고" });
+  const result = await runner.askWorker(cardId, "r1", "질문");
+  assert.equal(result.isError, true);
+  assert.doesNotMatch(result.text, /구현 보고/);
+});
+
+test("a person's prompt replacing the answer turn does not pass off their reply as the answer", async () => {
+  const { runner, worker, cardId } = await reviewing();
+  worker.tail = [{ type: "user_message", text: "[질문]\n\n첫째" }, { type: "assistant_message", text: "첫째 답" }];
+  assert.equal((await runner.askWorker(cardId, "r1", "첫째")).isError, undefined);
+  worker.tail = [{ type: "user_message", text: "사람의 지시" }, { type: "assistant_message", text: "사람에게 한 답" }];
+  worker.results.push({ status: "idle", final: null, error: null, lastMessage: "사람에게 한 답" });
+  assert.equal((await runner.askWorker(cardId, "r2", "둘째")).isError, true);
+});
+
+test("a busy worker's own permission prompts are left to the user while the board checks on it", async () => {
+  const { runner, worker, cardId, workerId } = await reviewing();
+  worker.active = true;
+  let during: string | null = "unset";
+  worker.onRefresh = () => {
+    during = runner.permissionDecision(workerId, { name: "Edit" });
+  };
+  assert.equal((await runner.askWorker(cardId, "r1", "바쁨")).isError, true);
+  assert.equal(during, null);
+});
+
+test("a question still queued when its asker's team moves on never reaches the worker", async () => {
+  const { runner, store, asked, worker, cardId } = await reviewing();
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  worker.onRun = () => gate;
+  const first = runner.askWorker(cardId, "r1", "첫째");
+  const second = runner.askWorker(cardId, "r2", "둘째");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await store.upsert({ ...store.get(cardId)!, reviewers: [] });
+  release();
+  assert.equal((await first).isError, true);
+  assert.equal((await second).isError, true);
+  assert.equal(asked.length, 1);
+});
+
+test("an in-place card's next session survives the user archiving its shared workspace", async () => {
+  const { runner, store, report, attach, created, workspaceEntries } = await setup({ reviewRoles: "correctness" });
+  attach();
+  workspaceEntries.push({ id: "w", workspaceDirectory: "/x" });
+  const card = await runner.add({ workspaceId: "w", cwd: "/x", title: "제자리" });
+  const started = (await runner.start(card.id))!;
+  workspaceEntries.length = 0;
+  workspaceEntries.push({ id: "other", workspaceDirectory: "/x" });
+  await runner.onTurnEnded(started.agentId!, { kind: "completed" });
+  await report(card.id, started.agentId!, "done", "구현 완료", "implement");
+  await runner.onTurnEnded(started.agentId!, { kind: "completed" });
+  assert.equal(store.get(card.id)!.stage, "review");
+  assert.equal(created.at(-1).workspaceId, "other");
+});
+
+test("a shared workspace is found by id even when its directory is spelled differently, so sessions never open one each", async () => {
+  const { runner, store, report, attach, created, workspaceEntries, workspacesCreated } = await setup({ reviewRoles: "correctness,security" });
+  attach();
+  workspaceEntries.push({ id: "w", workspaceDirectory: "/private/tmp/x" });
+  const card = await runner.add({ workspaceId: "w", cwd: "/tmp/x", title: "경로 표기" });
+  const started = (await runner.start(card.id))!;
+  await report(card.id, started.agentId!, "done", "계획", "plan");
+  await runner.onTurnEnded(started.agentId!, { kind: "completed" });
+  await report(card.id, started.agentId!, "done", "구현", "implement");
+  await runner.onTurnEnded(started.agentId!, { kind: "completed" });
+  assert.equal(store.get(card.id)!.stage, "review");
+  assert.equal(workspacesCreated.length, 0);
+  assert.ok(created.length >= 3 && created.every((session: any) => session.workspaceId === "w"));
 });

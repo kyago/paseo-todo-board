@@ -46,4 +46,5 @@ test("only team sessions get todo_agent_ask, which asks for this card and callin
   assert.equal(tool.name, "todo_agent_ask");
   assert.deepEqual(await run(tool, { question: " 왜? " }), { text: "답" });
   assert.deepEqual(calls, [["card-1", "agent-9", "왜?"]]);
+  assert.throws(() => tool.input.parse({ question: "   " }));
 });

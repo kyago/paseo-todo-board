@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { type Card, type CardAction, type CardType, type InboxMessage, type RunMeta, STAGE_LABELS } from "../shared/board.ts";
 import { BLOCKED_MARKER, MAX_WORKER_ASKS, type PromptCard, parseRating, priorRounds, ratingPrompt, stagePrompt, workerQuestionPrompt } from "../shared/prompts.ts";
@@ -42,7 +43,7 @@ const stamp = () => new Date().toISOString();
 /** Buttons and commands that count as a person stepping in; starting and deleting a card are normal use. */
 const INTERVENTIONS: CardAction[] = ["advance", "retry", "reject", "complete", "pause"];
 const ASK_TIMEOUT_MS = 5 * 60_000;
-const ASK_PERMISSION_RETRIES = 3;
+const ASK_POLL_MS = 100;
 const askError = (text: string) => ({ text: `${text} 아는 내용으로 판정하세요.`, isError: true });
 
 export class Runner {
@@ -53,7 +54,7 @@ export class Runner {
   private readonly askCounts = new Map<string, number>();
   /** The last queued question per worker: one answer turn at a time, so answers cannot cross. */
   private readonly askQueue = new Map<string, Promise<unknown>>();
-  /** Workers in an answer turn. Nobody is watching those turns, so their permission prompts are declined. */
+  /** Workers in an answer turn, until that turn ends. Nobody is watching those turns, so their permission prompts are declined. */
   private readonly answering = new Set<string>();
 
   constructor(deps: RunnerDeps) {
@@ -155,8 +156,9 @@ export class Runner {
 
   /** The active workspace of an in-place card's directory. Sessions created by `cwd` alone would each open a new one. */
   private async sharedWorkspace(card: Card): Promise<string> {
-    const here = await this.workspacesIn(card.cwd);
-    const existing = here.find((workspace) => workspace.id === card.workspaceId) ?? here[0];
+    const { entries } = await this.api().workspaces.list();
+    // By id first: a directory spelled differently (/tmp, /private/tmp) must not open a new workspace per session.
+    const existing = entries.find((workspace) => workspace.id === card.workspaceId) ?? entries.find((workspace) => (workspace.workspaceDirectory ?? workspace.projectRootPath) === card.cwd);
     if (existing) return existing.id;
     return (await this.api().workspaces.create({ source: { kind: "directory", path: card.cwd }, title: `[투두] ${card.title}` })).id;
   }
@@ -210,6 +212,8 @@ export class Runner {
 
   /** A responsible session ended a turn: apply its report, or block the card when there is none. */
   async onTurnEnded(agentId: string, outcome: TurnOutcome): Promise<void> {
+    // An answer turn that ends, or that a stage prompt replaced, never moves the card.
+    if (this.answering.delete(agentId)) return this.processInbox();
     const rated = this.store.all().find((item) => item.aiRaterId === agentId);
     if (rated) return this.finishRating(rated, agentId, outcome);
     const card = this.store.byAgent(agentId);
@@ -284,30 +288,53 @@ export class Runner {
     const used = this.askCounts.get(askerId) ?? 0;
     if (used >= MAX_WORKER_ASKS) return askError(`질문은 세션당 ${MAX_WORKER_ASKS}회까지입니다.`);
     this.askCounts.set(askerId, used + 1);
-    const turn = (this.askQueue.get(workerId) ?? Promise.resolve()).then(() => this.answer(workerId, member.label, question));
+    // The team can move on while a question waits in the queue or its answer turn runs.
+    const waiting = () => this.store.get(cardId)?.reviewers.some((reviewer) => reviewer.agentId === askerId && reviewer.status === null) ?? false;
+    const turn = (this.askQueue.get(workerId) ?? Promise.resolve()).then(() => this.answer(workerId, member.label, question, waiting));
     this.askQueue.set(workerId, turn);
     return turn;
   }
 
-  private async answer(workerId: string, asker: string, question: string): Promise<{ text: string; isError?: boolean }> {
+  private async answer(workerId: string, asker: string, question: string, waiting: () => boolean): Promise<{ text: string; isError?: boolean }> {
     const { planMode, workerMode } = this.settings;
-    this.answering.add(workerId);
+    const movedOn = () => askError("카드가 이미 다음 단계로 넘어갔습니다.");
+    let release = false;
     try {
+      if (!waiting()) return movedOn();
       const worker = this.api().agents.ref(workerId);
       await worker.refresh();
       if (worker.activeTurn) return askError("구현 세션이 다른 턴을 진행 중입니다.");
+      this.answering.add(workerId);
+      release = true;
+      const deadline = Date.now() + ASK_TIMEOUT_MS;
       // Read-only only when workerMode is set: the worker's next stage prompt is what switches it back.
       let result = await worker.run(workerQuestionPrompt(asker, question), { sessionMode: planMode && workerMode ? planMode : undefined, timeoutMs: ASK_TIMEOUT_MS });
-      // permissionDecision declines the prompt and the turn goes on.
-      for (let tries = 0; result.status === "permission" && tries < ASK_PERMISSION_RETRIES; tries++) result = await worker.waitForFinish(ASK_TIMEOUT_MS);
-      if (result.status === "idle" && result.lastMessage) return { text: result.lastMessage };
+      // permissionDecision declines the prompt and the turn goes on; until that lands, the wait reports "permission" at once.
+      while (result.status === "permission" && waiting() && Date.now() < deadline) {
+        await sleep(ASK_POLL_MS);
+        result = await worker.waitForFinish(Math.max(deadline - Date.now(), 1));
+      }
+      // The SDK cannot cancel a turn: one still open keeps declining prompts until its turn end arrives.
+      release = result.status !== "timeout" && result.status !== "permission";
+      // A stage prompt replaces the answer turn and the wait runs on, so this result would be that stage's.
+      if (!waiting()) return movedOn();
+      if (result.status === "idle" && result.lastMessage && (await this.repliedTo(workerId, question))) return { text: result.lastMessage };
       return askError(`답을 받지 못했습니다(${result.status}${result.error ? `: ${result.error}` : ""}).`);
     } catch (error) {
       console.error(`[todo-board] ask ${workerId} failed`, error);
       return askError(`답을 받지 못했습니다: ${(error as Error).message}.`);
     } finally {
-      this.answering.delete(workerId);
+      if (release) this.answering.delete(workerId);
     }
+  }
+
+  /** The wait's lastMessage is only the session's latest text: a canceled or silent turn gives the previous turn's, and a person's prompt replacing the turn gives the reply meant for them. */
+  private async repliedTo(agentId: string, question: string): Promise<boolean> {
+    const { entries } = await this.api().agents.ref(agentId).timeline.refetch({ direction: "tail", limit: 20 });
+    const spoken = entries.flatMap(({ item }) => (item.type === "user_message" || item.type === "assistant_message" ? [item] : []));
+    const prompt = spoken.findLast((item) => item.type === "user_message");
+    // Tool calls can push the prompt out of the window; the reply after them is still this turn's.
+    return spoken.at(-1)?.type !== "user_message" && (!prompt || prompt.text.includes(question));
   }
 
   /** `todo_add`, `todo_start` and `todo_complete` take effect at once; reports wait for their session's turn to end. */
@@ -335,15 +362,11 @@ export class Runner {
     else await this.start(card.id);
   }
 
-  private async workspacesIn(cwd: string) {
-    const { entries } = await this.api().workspaces.list();
-    return entries.filter((workspace) => (workspace.workspaceDirectory ?? workspace.projectRootPath) === cwd);
-  }
-
   private async workspaceFor(cwd: string): Promise<string | null> {
     if (!this.paseo) return null;
     try {
-      return (await this.workspacesIn(cwd))[0]?.id ?? null;
+      const { entries } = await this.paseo.workspaces.list();
+      return entries.find((workspace) => (workspace.workspaceDirectory ?? workspace.projectRootPath) === cwd)?.id ?? null;
     } catch {
       return null;
     }
@@ -400,8 +423,10 @@ export class Runner {
     const agentId = randomUUID();
     const config = { provider: options.provider, modeId: options.modeId };
     const common = { agentId, config, title: options.title, prompt: options.prompt, labels: options.labels };
-    const agent = card.workWorkspaceId
-      ? await this.api().workspaces.ref(card.workWorkspaceId).agents.create(common)
+    // An in-place card's workspace is the user's, who may archive it while the card runs.
+    const workspaceId = card.workWorkspaceId && !card.branch ? await this.sharedWorkspace({ ...card, workspaceId: card.workWorkspaceId }) : card.workWorkspaceId;
+    const agent = workspaceId
+      ? await this.api().workspaces.ref(workspaceId).agents.create(common)
       : await this.api().agents.create({ ...common, cwd: workDir(card) });
     return agent.id;
   }
