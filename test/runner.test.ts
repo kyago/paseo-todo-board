@@ -16,6 +16,9 @@ function fakePaseo() {
   const workspacesCreated: any[] = [];
   const archived: string[] = [];
   const lastText = { value: "마지막 답" };
+  const workspaceEntries: any[] = [];
+  const asked: { agentId: string; text: string; options: any }[] = [];
+  const worker = { active: false, results: [] as any[], waited: [] as any[], onRun: async () => {} };
   const agentsApi = (workspaceId: string | null) => ({
     create: async (options: any) => {
       created.push({ ...options, workspaceId });
@@ -26,7 +29,15 @@ function fakePaseo() {
     agents: {
       ...agentsApi(null),
       ref: (agentId: string) => ({
-        activeTurn: null,
+        get activeTurn() {
+          return worker.active ? { id: "turn" } : null;
+        },
+        run: async (text: string, options: any) => {
+          asked.push({ agentId, text, options });
+          await worker.onRun();
+          return worker.results.shift() ?? { status: "idle", final: null, error: null, lastMessage: `답${asked.length}` };
+        },
+        waitForFinish: async () => worker.waited.shift() ?? { status: "idle", final: null, error: null, lastMessage: "거절 뒤 답" },
         send: async (text: string, options: any) => void sent.push({ agentId, text, options }),
         refresh: async () => null,
         archive: async () => void archived.push(agentId),
@@ -34,7 +45,7 @@ function fakePaseo() {
       }),
     },
     workspaces: {
-      list: async () => ({ entries: [] }),
+      list: async () => ({ entries: workspaceEntries }),
       create: async (options: any) => {
         workspacesCreated.push(options);
         return { id: `wks-${workspacesCreated.length}`, directory: options.source.cwd, refresh: async () => null };
@@ -43,7 +54,7 @@ function fakePaseo() {
     },
     providers: { listModels: async (provider: string) => ({ models: [{ id: "m-old" }, { id: `${provider}-default`, isDefault: true }] }) },
   };
-  return { paseo: paseo as any, created, sent, workspacesCreated, archived, lastText };
+  return { paseo: paseo as any, created, sent, workspacesCreated, archived, lastText, workspaceEntries, asked, worker };
 }
 
 const exec = promisify(execFile);
@@ -231,8 +242,9 @@ test("hideWorkspace=false makes a visible worktree workspace", async () => {
 });
 
 test("a non-git directory works in place: no worktree, one card at a time", async () => {
-  const { runner, store, workspacesCreated, attach } = await setup();
+  const { runner, store, workspacesCreated, workspaceEntries, attach } = await setup();
   attach();
+  workspaceEntries.push({ id: "w", workspaceDirectory: "/not-a-repo" });
   const first = await runner.add({ workspaceId: "w", cwd: "/not-a-repo", title: "1" });
   const started = (await runner.start(first.id))!;
   assert.equal(started.workCwd, "/not-a-repo");
@@ -574,11 +586,16 @@ test("deleting a card while its rating starts or runs leaves no session or works
   context.attach();
   const card = await context.runner.add({ workspaceId: "w", cwd: "/x", title: "삭제" });
   await context.runner.start(card.id);
-  const create = context.paseo.agents.create;
-  context.paseo.agents.create = async (options: any) => {
-    await context.store.remove(card.id);
-    return create(options);
-  };
+  const ref = context.paseo.workspaces.ref;
+  context.paseo.workspaces.ref = (workspaceId: string) => ({
+    ...ref(workspaceId),
+    agents: {
+      create: async (options: any) => {
+        await context.store.remove(card.id);
+        return ref(workspaceId).agents.create(options);
+      },
+    },
+  });
   await context.runner.action(card.id, "complete");
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(context.store.get(card.id), undefined);
@@ -642,4 +659,138 @@ test("by default a card is reworked once, re-reviewed by correctness and the fai
   await finishTeam("tests");
   assert.equal(store.get(card.id)!.state, "needs_human");
   assert.equal(created.length, sessions);
+});
+
+test("every session of an in-place card lands in the card's workspace instead of opening one each", async () => {
+  const { runner, store, report, attach, created, workspaceEntries, workspacesCreated } = await setup({ reviewRoles: "correctness,security" });
+  attach();
+  workspaceEntries.push({ id: "other", workspaceDirectory: "/x" }, { id: "w", workspaceDirectory: "/x" });
+  const card = await runner.add({ workspaceId: "w", cwd: "/x", title: "제자리" });
+  const started = (await runner.start(card.id))!;
+  assert.equal(started.workWorkspaceId, "w");
+  await runner.onTurnEnded(started.agentId!, { kind: "completed" });
+  await report(card.id, started.agentId!, "done", "구현 완료", "implement");
+  await runner.onTurnEnded(started.agentId!, { kind: "completed" });
+  assert.equal(store.get(card.id)!.stage, "review");
+  assert.ok(created.length >= 3);
+  assert.ok(created.every((session: any) => session.workspaceId === "w" && session.cwd === undefined));
+  assert.equal(workspacesCreated.length, 0);
+});
+
+test("an in-place card falls back to the directory's active workspace, then to one workspace of its own", async () => {
+  const { runner, attach, workspaceEntries, workspacesCreated } = await setup();
+  attach();
+  workspaceEntries.push({ id: "live", workspaceDirectory: "/x" });
+  const archivedHome = await runner.add({ workspaceId: "gone", cwd: "/x", title: "옛 워크스페이스" });
+  assert.equal((await runner.start(archivedHome.id))!.workWorkspaceId, "live");
+  const noHome = await runner.add({ workspaceId: null, cwd: "/fresh", title: "없음" });
+  const started = (await runner.start(noHome.id))!;
+  assert.deepEqual(workspacesCreated.map((workspace: any) => workspace.source), [{ kind: "directory", path: "/fresh" }]);
+  assert.equal(started.workWorkspaceId, "wks-1");
+});
+
+test("finishing an in-place card never archives the workspace it shares", async () => {
+  const { runner, store, attach, archived, workspaceEntries } = await setup();
+  attach();
+  workspaceEntries.push({ id: "w", workspaceDirectory: "/x" });
+  const card = await runner.add({ workspaceId: "w", cwd: "/x", title: "공유" });
+  const started = (await runner.start(card.id))!;
+  await store.upsert({ ...store.get(card.id)!, prUrl: "https://example.test/pr/1" });
+  await runner.finish(card.id);
+  assert.ok(archived.includes(started.agentId!));
+  // The rating session is the last to go; its turn end is what archives a card's workspace.
+  const rater = store.get(card.id)!.aiRaterId!;
+  await runner.onTurnEnded(rater, { kind: "completed" });
+  assert.ok(archived.includes(rater));
+  assert.ok(!archived.includes("workspace:w"));
+});
+
+async function reviewing(overrides: Parameters<typeof setup>[0] = {}) {
+  const context = await setup({ reviewRoles: "correctness,security", ...overrides });
+  context.attach();
+  context.workspaceEntries.push({ id: "w", workspaceDirectory: "/x" });
+  const card = await context.runner.add({ workspaceId: "w", cwd: "/x", title: "질문 카드" });
+  const started = (await context.runner.start(card.id))!;
+  await context.store.upsert({ ...started, stage: "review", state: "running", reviewers: [{ agentId: "r1", role: "correctness", label: "정확성·회귀", status: null, summary: null }, { agentId: "r2", role: "security", label: "보안", status: null, summary: null }] });
+  return { ...context, cardId: card.id, workerId: started.agentId! };
+}
+
+test("todo_agent_ask runs the question on the worker read-only and returns its answer without touching the card", async () => {
+  const { runner, store, asked, cardId, workerId } = await reviewing();
+  const result = await runner.askWorker(cardId, "r1", "왜 분기를 지웠나?");
+  assert.equal(result.text, "답1");
+  assert.equal(result.isError, undefined);
+  assert.equal(asked[0].agentId, workerId);
+  assert.match(asked[0].text, /정확성·회귀/);
+  assert.match(asked[0].text, /왜 분기를 지웠나\?/);
+  assert.match(asked[0].text, /수정하지/);
+  assert.equal(asked[0].options.sessionMode, "plan");
+  assert.equal(store.get(cardId)!.stage, "review");
+  assert.equal(store.get(cardId)!.state, "running");
+});
+
+test("without a mode to go back to, the answer turn keeps the worker's mode", async () => {
+  const { runner, asked, cardId } = await reviewing({ workerMode: "" });
+  await runner.askWorker(cardId, "r1", "질문");
+  assert.equal(asked[0].options.sessionMode, undefined);
+});
+
+test("questions to one worker run one at a time so answers cannot cross", async () => {
+  const { runner, asked, worker, cardId } = await reviewing();
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  worker.onRun = async () => {
+    worker.onRun = async () => {};
+    await gate;
+  };
+  const first = runner.askWorker(cardId, "r1", "첫째");
+  const second = runner.askWorker(cardId, "r2", "둘째");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(asked.length, 1);
+  release();
+  assert.equal((await first).text, "답1");
+  assert.equal((await second).text, "답2");
+  assert.equal(asked.length, 2);
+  assert.match(asked[1].text, /둘째/);
+});
+
+test("todo_agent_ask is limited per team member and refuses anyone not waiting on the worker", async () => {
+  const { runner, store, asked, cardId } = await reviewing();
+  assert.equal((await runner.askWorker(cardId, "stranger", "질문")).isError, true);
+  await runner.askWorker(cardId, "r1", "1");
+  await runner.askWorker(cardId, "r1", "2");
+  const third = await runner.askWorker(cardId, "r1", "3");
+  assert.equal(third.isError, true);
+  assert.match(third.text, /2회/);
+  assert.equal(asked.length, 2);
+  const card = store.get(cardId)!;
+  await store.upsert({ ...card, reviewers: card.reviewers.map((reviewer) => (reviewer.agentId === "r2" ? { ...reviewer, status: "done" as const } : reviewer)) });
+  assert.equal((await runner.askWorker(cardId, "r2", "보고 뒤 질문")).isError, true);
+  assert.equal((await runner.askWorker("no-card", "r1", "질문")).isError, true);
+});
+
+test("a busy worker is not interrupted, and a failed answer turn becomes an error for the asker", async () => {
+  const { runner, asked, worker, cardId } = await reviewing();
+  worker.active = true;
+  assert.equal((await runner.askWorker(cardId, "r1", "바쁨")).isError, true);
+  assert.equal(asked.length, 0);
+  worker.active = false;
+  worker.results.push({ status: "timeout", final: null, error: null, lastMessage: null });
+  const result = await runner.askWorker(cardId, "r2", "시간 초과");
+  assert.equal(result.isError, true);
+  assert.match(result.text, /timeout/);
+});
+
+test("while answering, the worker's permission prompts are declined and its turn is awaited", async () => {
+  const { runner, worker, cardId, workerId } = await reviewing();
+  assert.equal(runner.permissionDecision(workerId, { name: "Edit" }), null);
+  let during: string | null = null;
+  worker.onRun = async () => {
+    during = runner.permissionDecision(workerId, { name: "Edit" });
+  };
+  worker.results.push({ status: "permission", final: null, error: null, lastMessage: null });
+  const result = await runner.askWorker(cardId, "r1", "질문");
+  assert.match(during ?? "", /답/);
+  assert.equal(result.text, "거절 뒤 답");
+  assert.equal(runner.permissionDecision(workerId, { name: "Edit" }), null);
 });

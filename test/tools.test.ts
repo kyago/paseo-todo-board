@@ -3,7 +3,7 @@ import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { boardTools } from "../server/tools.ts";
+import { askTools, boardTools } from "../server/tools.ts";
 
 const agent = { id: "agent-9", workspaceId: null, parentAgentId: null, provider: "codex", cwd: "/proj", title: null };
 const run = (tool: { input: { parse(v: unknown): unknown }; execute(input: unknown, context: any): unknown }, input: unknown) =>
@@ -32,4 +32,18 @@ test("todo_add carries the card type and todo_complete drops a complete message 
   const messages = await Promise.all((await readdir(inbox)).map(async (name) => JSON.parse(await readFile(join(inbox, name), "utf8"))));
   assert.deepEqual(messages.find((m) => m.kind === "add"), { kind: "add", cwd: "/proj", title: "조사", type: "doc" });
   assert.deepEqual(messages.find((m) => m.kind === "complete"), { kind: "complete", cwd: "/proj", query: "조사" });
+});
+
+test("only team sessions get todo_agent_ask, which asks for this card and calling agent", async () => {
+  const calls: unknown[][] = [];
+  const ask = async (...args: unknown[]) => {
+    calls.push(args);
+    return { text: "답" };
+  };
+  assert.deepEqual(askTools({}, ask), []);
+  assert.deepEqual(askTools({ "todo-board/card": "card-1" }, ask), []);
+  const [tool] = askTools({ "todo-board/card": "card-1", "todo-board/stage": "review" }, ask);
+  assert.equal(tool.name, "todo_agent_ask");
+  assert.deepEqual(await run(tool, { question: " 왜? " }), { text: "답" });
+  assert.deepEqual(calls, [["card-1", "agent-9", "왜?"]]);
 });

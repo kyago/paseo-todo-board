@@ -133,3 +133,8 @@ test("a repeat review runs correctness and the roles that failed; the first roun
   const noCorrectness = rolesFor("review", "security,tests");
   assert.deepEqual(ids(recheckRoles(noCorrectness, old)), ["security", "tests"]);
 });
+
+test("only team prompts offer todo_agent_ask", () => {
+  assert.match(stagePrompt(card, "review", { role: ROLES[0] }), /todo_agent_ask/);
+  assert.doesNotMatch(stagePrompt(card, "implement"), /todo_agent_ask/);
+});

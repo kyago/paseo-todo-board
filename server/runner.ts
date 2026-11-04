@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { type Card, type CardAction, type CardType, type InboxMessage, type RunMeta, STAGE_LABELS } from "../shared/board.ts";
-import { BLOCKED_MARKER, type PromptCard, parseRating, priorRounds, ratingPrompt, stagePrompt } from "../shared/prompts.ts";
+import { BLOCKED_MARKER, MAX_WORKER_ASKS, type PromptCard, parseRating, priorRounds, ratingPrompt, stagePrompt, workerQuestionPrompt } from "../shared/prompts.ts";
 import { recheckRoles, rolesFor } from "../shared/roles.ts";
 import type { BoardSettingsValues } from "../shared/settings.ts";
 import { commitAll, createDraftPr, gitHead, hasRemote, isGitRepo, pushBranch } from "./git.ts";
@@ -41,11 +41,20 @@ const planName = (card: Pick<Card, "id">) => `todo-${card.id.slice(0, 8)}.md`;
 const stamp = () => new Date().toISOString();
 /** Buttons and commands that count as a person stepping in; starting and deleting a card are normal use. */
 const INTERVENTIONS: CardAction[] = ["advance", "retry", "reject", "complete", "pause"];
+const ASK_TIMEOUT_MS = 5 * 60_000;
+const ASK_PERMISSION_RETRIES = 3;
+const askError = (text: string) => ({ text: `${text} 아는 내용으로 판정하세요.`, isError: true });
 
 export class Runner {
   private paseo: Paseo | null = null;
   private reconciled = false;
   private readonly deps: RunnerDeps;
+  /** Questions asked per team member; a restart resets them, which only allows a few more questions. */
+  private readonly askCounts = new Map<string, number>();
+  /** The last queued question per worker: one answer turn at a time, so answers cannot cross. */
+  private readonly askQueue = new Map<string, Promise<unknown>>();
+  /** Workers in an answer turn. Nobody is watching those turns, so their permission prompts are declined. */
+  private readonly answering = new Set<string>();
 
   constructor(deps: RunnerDeps) {
     this.deps = deps;
@@ -98,7 +107,7 @@ export class Runner {
     try {
       placed = await this.place(card);
     } catch (error) {
-      return this.store.upsert({ ...card, state: "blocked", attention: `worktree 생성 실패: ${(error as Error).message}`, updatedAt: stamp() });
+      return this.store.upsert({ ...card, state: "blocked", attention: `작업 공간 준비 실패: ${(error as Error).message}`, updatedAt: stamp() });
     }
     const step = start({ ...placed, baseRef: await gitHead(workDir(placed)), queued: false, runMeta: await this.runMeta() });
     return this.commit(step.card, step.effect);
@@ -132,7 +141,7 @@ export class Runner {
   /** A Paseo worktree on branch `todo/<id>` when the card's directory is a git repository and worktrees are on. */
   private async place(card: Card): Promise<Card> {
     if (card.workCwd) return card;
-    if (!this.settings.useWorktree || !(await isGitRepo(card.cwd))) return { ...card, workCwd: card.cwd };
+    if (!this.settings.useWorktree || !(await isGitRepo(card.cwd))) return { ...card, workCwd: card.cwd, workWorkspaceId: await this.sharedWorkspace(card) };
     const branch = `todo/${card.id.slice(0, 8)}`;
     const workspace = await this.api().workspaces.create({
       source: { kind: "worktree", cwd: card.cwd, action: "branch-off", branchName: branch },
@@ -142,6 +151,14 @@ export class Runner {
     const directory = workspace.directory ?? (await workspace.refresh())?.workspaceDirectory ?? null;
     if (!directory) throw new Error("워크스페이스 디렉터리를 알 수 없습니다.");
     return { ...card, workCwd: directory, workWorkspaceId: workspace.id, branch };
+  }
+
+  /** The active workspace of an in-place card's directory. Sessions created by `cwd` alone would each open a new one. */
+  private async sharedWorkspace(card: Card): Promise<string> {
+    const here = await this.workspacesIn(card.cwd);
+    const existing = here.find((workspace) => workspace.id === card.workspaceId) ?? here[0];
+    if (existing) return existing.id;
+    return (await this.api().workspaces.create({ source: { kind: "directory", path: card.cwd }, title: `[투두] ${card.title}` })).id;
   }
 
   async action(cardId: string, action: CardAction): Promise<Card | null> {
@@ -243,6 +260,7 @@ export class Runner {
    * Returns the message to deny with, or null to leave the request to the user.
    */
   permissionDecision(agentId: string, request: PermissionLike): string | null {
+    if (this.answering.has(agentId)) return "질문에 답하는 중에는 도구 권한을 주지 않습니다. 아는 내용으로 답만 마지막 메시지로 적고 턴을 끝내세요.";
     const card = this.store.byAgent(agentId);
     if (!card || card.stage !== "plan" || card.agentId !== agentId || !this.planViaMessage()) return null;
     if (request.name === "ExitPlanMode") return "계획 승인은 필요 없습니다. 계획 전문을 마지막 메시지로 출력하고 턴을 끝내세요.";
@@ -255,6 +273,41 @@ export class Runner {
     if (!card || !responsibleAgents(card).includes(agentId)) return;
     const attention = pending ? "권한 요청 대기" : card.attention === "권한 요청 대기" ? null : card.attention;
     if (attention !== card.attention) await this.store.upsert({ ...card, attention, updatedAt: stamp() });
+  }
+
+  /** A team member's question to the card's worker. The asker's turn stays open meanwhile, so the card never sees it end without a report. */
+  async askWorker(cardId: string, askerId: string, question: string): Promise<{ text: string; isError?: boolean }> {
+    const card = this.store.get(cardId);
+    const member = card?.reviewers.find((reviewer) => reviewer.agentId === askerId);
+    const workerId = card?.agentId;
+    if (!workerId || !member || member.status !== null) return askError("지금은 구현 세션에 물어볼 수 없습니다.");
+    const used = this.askCounts.get(askerId) ?? 0;
+    if (used >= MAX_WORKER_ASKS) return askError(`질문은 세션당 ${MAX_WORKER_ASKS}회까지입니다.`);
+    this.askCounts.set(askerId, used + 1);
+    const turn = (this.askQueue.get(workerId) ?? Promise.resolve()).then(() => this.answer(workerId, member.label, question));
+    this.askQueue.set(workerId, turn);
+    return turn;
+  }
+
+  private async answer(workerId: string, asker: string, question: string): Promise<{ text: string; isError?: boolean }> {
+    const { planMode, workerMode } = this.settings;
+    this.answering.add(workerId);
+    try {
+      const worker = this.api().agents.ref(workerId);
+      await worker.refresh();
+      if (worker.activeTurn) return askError("구현 세션이 다른 턴을 진행 중입니다.");
+      // Read-only only when workerMode is set: the worker's next stage prompt is what switches it back.
+      let result = await worker.run(workerQuestionPrompt(asker, question), { sessionMode: planMode && workerMode ? planMode : undefined, timeoutMs: ASK_TIMEOUT_MS });
+      // permissionDecision declines the prompt and the turn goes on.
+      for (let tries = 0; result.status === "permission" && tries < ASK_PERMISSION_RETRIES; tries++) result = await worker.waitForFinish(ASK_TIMEOUT_MS);
+      if (result.status === "idle" && result.lastMessage) return { text: result.lastMessage };
+      return askError(`답을 받지 못했습니다(${result.status}${result.error ? `: ${result.error}` : ""}).`);
+    } catch (error) {
+      console.error(`[todo-board] ask ${workerId} failed`, error);
+      return askError(`답을 받지 못했습니다: ${(error as Error).message}.`);
+    } finally {
+      this.answering.delete(workerId);
+    }
   }
 
   /** `todo_add`, `todo_start` and `todo_complete` take effect at once; reports wait for their session's turn to end. */
@@ -282,11 +335,15 @@ export class Runner {
     else await this.start(card.id);
   }
 
+  private async workspacesIn(cwd: string) {
+    const { entries } = await this.api().workspaces.list();
+    return entries.filter((workspace) => (workspace.workspaceDirectory ?? workspace.projectRootPath) === cwd);
+  }
+
   private async workspaceFor(cwd: string): Promise<string | null> {
     if (!this.paseo) return null;
     try {
-      const { entries } = await this.paseo.workspaces.list();
-      return entries.find((workspace) => (workspace.workspaceDirectory ?? workspace.projectRootPath) === cwd)?.id ?? null;
+      return (await this.workspacesIn(cwd))[0]?.id ?? null;
     } catch {
       return null;
     }
@@ -338,7 +395,7 @@ export class Runner {
     }
   }
 
-  /** Creates a session in the card's worktree workspace (or directory); its labels give it `todo_report` for this card and stage. */
+  /** Creates a session in the card's workspace (a card started before in-place workspaces has none); its labels give it `todo_report` for this card and stage. */
   private async createSession(card: Card, options: { provider: string; modeId?: string; title: string; prompt: string; labels: Record<string, string> }): Promise<string> {
     const agentId = randomUUID();
     const config = { provider: options.provider, modeId: options.modeId };
@@ -421,7 +478,8 @@ export class Runner {
   }
 
   private async archiveWorkspace(card: Card): Promise<void> {
-    if (!card.prUrl || !card.workWorkspaceId) return;
+    // Only a card's branch workspace is the board's own; an in-place card shares the user's.
+    if (!card.prUrl || !card.branch || !card.workWorkspaceId) return;
     await this.api().workspaces.ref(card.workWorkspaceId).archive().catch((error) => console.error("[todo-board] workspace archive", error));
   }
 

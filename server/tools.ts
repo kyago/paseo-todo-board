@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type AgentToolDefinition, defineAgentTool } from "@getpaseo/plugin/server";
+import { type AgentToolDefinition, type AgentToolResult, defineAgentTool } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import { CardTypeSchema, type InboxMessage, ReportStatusSchema, StageSchema } from "../shared/board.ts";
 
@@ -65,5 +65,21 @@ export function boardTools(inbox: string, labels: Readonly<Record<string, string
       },
     }),
     ...tools,
+  ];
+}
+
+export type AskWorker = (cardId: string, askerId: string, question: string) => Promise<AgentToolResult>;
+
+/** Team sessions (card and stage labels) can question the card's worker; the answer comes back inside the same tool call, so their turn stays open. */
+export function askTools(labels: Readonly<Record<string, string>>, ask: AskWorker): AgentToolDefinition[] {
+  const cardId = labels[CARD_LABEL];
+  if (!cardId || !StageSchema.safeParse(labels[STAGE_LABEL]).success) return [];
+  return [
+    defineAgentTool({
+      name: "todo_agent_ask",
+      description: "이 카드를 구현한 세션에 질문하고 답을 받는다. 구현 의도를 코드만으로 알 수 없을 때 판정 전에 쓴다.",
+      input: z.object({ question: z.string().min(1) }),
+      execute: ({ question }, { agent }) => ask(cardId, agent.id, question.trim()),
+    }),
   ];
 }
