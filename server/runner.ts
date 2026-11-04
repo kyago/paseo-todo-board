@@ -4,10 +4,10 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { type Card, type CardAction, type CardType, type InboxMessage, type RunMeta, STAGE_LABELS } from "../shared/board.ts";
-import { BLOCKED_MARKER, MAX_WORKER_ASKS, type PromptCard, parseRating, priorRounds, ratingPrompt, stagePrompt, workerQuestionPrompt } from "../shared/prompts.ts";
+import { BLOCKED_MARKER, MAX_WORKER_ASKS, type PromptCard, parseRating, plannedRepo, priorRounds, ratingPrompt, stagePrompt, workerQuestionPrompt } from "../shared/prompts.ts";
 import { recheckRoles, rolesFor } from "../shared/roles.ts";
 import type { BoardSettingsValues } from "../shared/settings.ts";
-import { commitAll, createDraftPr, gitHead, hasRemote, isGitRepo, pushBranch } from "./git.ts";
+import { childRepos, commitAll, createDraftPr, gitHead, hasRemote, isGitRepo, pushBranch } from "./git.ts";
 import { consume, readInbox } from "./inbox.ts";
 import { promptVersion, ratingVersion } from "./prompt-version.ts";
 import { type Effect, type IncomingReport, type TurnOutcome, advance, applyReport, applyTurnEnded, newCard, rejectToImplement, responsibleAgents, retryStage, start } from "./machine.ts";
@@ -154,15 +154,39 @@ export class Runner {
   private async place(card: Card): Promise<Card> {
     if (card.workCwd) return card;
     if (!this.settings.useWorktree || !(await isGitRepo(card.cwd))) return { ...card, workCwd: card.cwd, workWorkspaceId: await this.sharedWorkspace(card) };
+    return this.createWorktree(card, card.cwd);
+  }
+
+  private async createWorktree(card: Card, repo: string): Promise<Card> {
     const branch = `todo/${card.id.slice(0, 8)}`;
     const workspace = await this.api().workspaces.create({
-      source: { kind: "worktree", cwd: card.cwd, action: "branch-off", branchName: branch },
+      source: { kind: "worktree", cwd: repo, action: "branch-off", branchName: branch },
       title: `[투두] ${card.title}`,
       background: this.settings.hideWorkspace,
     });
     const directory = workspace.directory ?? (await workspace.refresh())?.workspaceDirectory ?? null;
     if (!directory) throw new Error("워크스페이스 디렉터리를 알 수 없습니다.");
     return { ...card, workCwd: directory, workWorkspaceId: workspace.id, branch };
+  }
+
+  /** Repositories a code card may still move into: its directory is not one, and it has no worktree yet. */
+  private async linkableRepos(card: Card): Promise<string[]> {
+    if (!this.settings.useWorktree || card.type === "doc" || card.branch || (await isGitRepo(card.cwd))) return [];
+    return childRepos(card.cwd);
+  }
+
+  /**
+   * A card from a folder of repositories plans there, then moves to a worktree of the repository its plan names.
+   * A session cannot change directory, so implementation starts a new session, which gets the plan in its prompt.
+   * Without a named repository the card keeps working in place.
+   */
+  private async linkRepo(card: Card): Promise<Card> {
+    const repo = plannedRepo((await this.readPlan(card)) ?? "", await this.linkableRepos(card));
+    if (!repo) return card;
+    const placed = await this.createWorktree(card, join(card.cwd, repo));
+    const linked = await this.store.upsert({ ...placed, baseRef: await gitHead(placed.workCwd!), agentId: null, sessionIds: placed.sessionIds.filter((id) => id !== card.agentId) });
+    if (card.agentId) void this.archiveSessions([card.agentId]);
+    return linked;
   }
 
   /** The active workspace of an in-place card's directory. Sessions created by `cwd` alone would each open a new one. */
@@ -254,10 +278,20 @@ export class Runner {
       if (!text) latest = null;
     }
     if (latest) {
-      if (card.stage === "plan" && latest.status === "done") await this.ensurePlanFile(card, latest.summary);
+      if (card.stage === "plan" && latest.status === "done") {
+        await this.ensurePlanFile(card, latest.summary);
+        try {
+          await this.linkRepo(card);
+        } catch (error) {
+          await this.store.upsert({ ...card, state: "blocked", attention: `저장소 연결 실패: ${(error as Error).message}`, updatedAt: stamp() });
+          return;
+        }
+      }
       // Team members end turns concurrently; apply to the card as it is now so no member's report is overwritten.
       const step = applyReport(this.store.get(card.id) ?? card, latest, this.settings, agentId);
       const after = await this.commit(step.card, step.effect);
+      // A linked card has left the shared directory, so the next card there need not wait for it.
+      if (after.workCwd !== after.cwd) await this.releaseQueue(after.cwd);
       // A team member is done once it has reported; it goes away at once instead of waiting for the card to complete.
       if (this.settings.autoArchive && card.reviewers.some((reviewer) => reviewer.agentId === agentId)) {
         await this.archiveSessions([agentId]);
@@ -393,7 +427,7 @@ export class Runner {
 
   /** What prompts need to know about the card, including the plan text once it exists. */
   private async promptCard(card: Card): Promise<PromptCard> {
-    return { id: card.id, title: card.title, detail: card.detail, baseRef: card.baseRef, planPath: this.planPath(card), plan: await this.readPlan(card), type: card.type, priorRounds: priorRounds(card.reports) };
+    return { id: card.id, title: card.title, detail: card.detail, baseRef: card.baseRef, planPath: this.planPath(card), plan: await this.readPlan(card), type: card.type, priorRounds: priorRounds(card.reports), repos: card.stage === "plan" ? await this.linkableRepos(card) : [] };
   }
 
   /** A read-only planning turn cannot write files, so the plan text becomes the plan file (an existing file is kept). */

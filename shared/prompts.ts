@@ -31,8 +31,27 @@ const HEADER = (card: PromptCard, stage: AgentStage, options: PromptOptions) =>
     .filter(Boolean)
     .join("\n");
 
+const REPO_RULE = (repos: string[]) => `이 폴더의 git 저장소: ${repos.join(", ")}. 고칠 저장소가 하나면 계획의 첫 줄에 \`${REPO_LABEL}: 이름\`을 쓴다. 코드를 바꾸지 않거나 여러 저장소에 걸치면 쓰지 않는다.`;
+
 const PLAN = (card: PromptCard, viaMessage: boolean) =>
-  viaMessage ? "목표: 구현 계획을 세운다." : `목표: 구현 계획을 세워 \`${card.planPath}\`(저장소 밖 파일)에 쓴다. 저장소의 파일은 수정하지 않는다.`;
+  [
+    viaMessage ? "목표: 구현 계획을 세운다." : `목표: 구현 계획을 세워 \`${card.planPath}\`(저장소 밖 파일)에 쓴다. 저장소의 파일은 수정하지 않는다.`,
+    card.repos?.length ? REPO_RULE(card.repos) : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+const REPO_LABEL = "저장소";
+const REPO_LINE = new RegExp(`^[-*#> \\t]*${REPO_LABEL}[* \\t]*[:：][*\` \\t]*([^\\s*\`]+)`);
+/** How far down a plan the repository line may be, past a title or a heading; deeper lines are the plan talking about repositories. */
+const REPO_LINE_REACH = 3;
+
+/** The repository a plan names, only if it is one of `repos`, so a plan cannot point the board anywhere else. */
+export function plannedRepo(plan: string, repos: string[]): string | null {
+  const top = plan.split("\n").filter((line) => line.trim()).slice(0, REPO_LINE_REACH);
+  const name = top.map((line) => line.match(REPO_LINE)?.[1]).find(Boolean)?.replace(/\/$/, "");
+  return name && repos.includes(name) ? name : null;
+}
 
 const IMPLEMENT = (card: PromptCard, extra?: string) =>
   [

@@ -12,6 +12,8 @@ export interface PromptCard {
   type?: CardType;
   /** Earlier rejections and the fixes that answered them, for a team reviewing again. */
   priorRounds?: string | null;
+  /** Repositories under a directory that is not one itself; the plan names the one to work in. */
+  repos?: string[];
 }
 
 export const scope = (card: PromptCard) => (card.type === "doc" ? "범위: 카드 상세에 적힌 산출물" : card.baseRef ? `범위: \`git diff ${card.baseRef}\`와 \`git status\`의 새 파일` : "범위: 작업 트리의 변경 파일 전체");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseRating, priorRounds, ratingPrompt, stagePrompt } from "../shared/prompts.ts";
+import { parseRating, plannedRepo, priorRounds, ratingPrompt, stagePrompt } from "../shared/prompts.ts";
 import { ROLES, recheckRoles, rolesFor } from "../shared/roles.ts";
 
 const card = { id: "abcdef12-3456", title: "로그인 버그 수정", detail: "세션 만료 시 500", baseRef: "deadbeef", planPath: "/data/plans/todo-abcdef12.md", plan: "1. 토큰 갱신\n2. 테스트" };
@@ -132,6 +132,21 @@ test("a repeat review runs correctness and the roles that failed; the first roun
   assert.deepEqual(ids(recheckRoles(team, old)), ["correctness"]);
   const noCorrectness = rolesFor("review", "security,tests");
   assert.deepEqual(ids(recheckRoles(noCorrectness, old)), ["security", "tests"]);
+});
+
+test("only a card in a folder of repositories is asked to name one, and only a listed name near the top counts", () => {
+  assert.doesNotMatch(stagePrompt(card, "plan", { planViaMessage: true }), /저장소: 이름/);
+  const text = stagePrompt({ ...card, repos: ["api", "web"] }, "plan", { planViaMessage: true });
+  assert.match(text, /git 저장소: api, web/);
+  assert.match(text, /첫 줄에 `저장소: 이름`/);
+
+  const repos = ["api", "my_web"];
+  assert.equal(plannedRepo("저장소: api\n\n# 계획", repos), "api");
+  assert.equal(plannedRepo("# 제목\n\n**저장소: `my_web`**\n본문", repos), "my_web");
+  assert.equal(plannedRepo("# 제목\n\n- 저장소：api/", repos), "api");
+  for (const plan of ["저장소: ../secret", "저장소: /etc", "저장소: ap", "계획만 있음", "", "저장소: api-old"]) assert.equal(plannedRepo(plan, repos), null, plan);
+  assert.equal(plannedRepo("# 제목\n첫 줄\n둘째 줄\n저장소: api", repos), null);
+  assert.equal(plannedRepo("저장소: api", []), null);
 });
 
 test("only team prompts offer todo_agent_ask", () => {

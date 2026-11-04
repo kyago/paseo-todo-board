@@ -663,6 +663,110 @@ test("by default a card is reworked once, re-reviewed by correctness and the fai
   assert.equal(created.length, sessions);
 });
 
+/** A folder of repositories, like a checkout root holding several projects. */
+async function repoFolder(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "todo-root-"));
+  for (const name of ["api", "web"]) {
+    await exec("git", ["init", "-q", "-b", "main", join(root, name)]);
+    await exec("git", ["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: join(root, name) });
+  }
+  await mkdir(join(root, "notes"));
+  return root;
+}
+
+test("a card in a folder of repositories plans there, then implements in a new session on a worktree of the named repository", async () => {
+  const context = await setup();
+  const root = await repoFolder();
+  context.attach();
+  context.workspaceEntries.push({ id: "w", workspaceDirectory: root });
+  const card = await context.runner.add({ workspaceId: "w", cwd: root, title: "하위 저장소 작업" });
+  const planning = (await context.runner.start(card.id))!;
+  assert.equal(planning.branch, null);
+  assert.equal(context.created[0].workspaceId, "w");
+  assert.match(context.created[0].prompt, /git 저장소: api, web/);
+  const planner = planning.agentId!;
+
+  context.lastText.value = "저장소: api\n\n1. 고친다";
+  await context.runner.onTurnEnded(planner, { kind: "completed" });
+  const current = context.store.get(card.id)!;
+  assert.equal(current.stage, "implement");
+  assert.equal(current.branch, `todo/${card.id.slice(0, 8)}`);
+  assert.equal(current.cwd, root);
+  assert.equal(context.workspacesCreated[0].source.cwd, join(root, "api"));
+  assert.match(current.baseRef!, /^[0-9a-f]{40}$/);
+  assert.notEqual(current.agentId, planner);
+  assert.equal(context.created.at(-1).agentId, current.agentId);
+  assert.equal(context.created.at(-1).workspaceId, "wks-1");
+  assert.match(context.created.at(-1).prompt, /<plan>[\s\S]*1\. 고친다/);
+  assert.equal(context.created.at(-1).config.modeId, "auto");
+  assert.equal(context.sent.length, 0);
+  assert.equal(current.sessionIds.includes(planner), false);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(context.archived.includes(planner), true);
+});
+
+test("a plan that names no valid repository keeps the card in place on the same session", async () => {
+  for (const text of ["1. 여러 저장소를 고친다", "저장소: ../밖", "저장소: notes"]) {
+    const context = await setup();
+    const root = await repoFolder();
+    context.attach();
+    context.workspaceEntries.push({ id: "w", workspaceDirectory: root });
+    const card = await context.runner.add({ workspaceId: "w", cwd: root, title: "그대로" });
+    const planner = (await context.runner.start(card.id))!.agentId!;
+    context.lastText.value = text;
+    await context.runner.onTurnEnded(planner, { kind: "completed" });
+    const current = context.store.get(card.id)!;
+    assert.equal(current.stage, "implement", text);
+    assert.equal(current.branch, null, text);
+    assert.equal(current.agentId, planner, text);
+    assert.equal(context.workspacesCreated.length, 0, text);
+    assert.equal(context.sent.at(-1)?.agentId, planner, text);
+  }
+});
+
+test("doc cards, cards with worktrees off, and cards already in a repository are never asked to name one", async () => {
+  const root = await repoFolder();
+  const doc = await setup();
+  doc.attach();
+  const docCard = await doc.runner.add({ workspaceId: "w", cwd: root, title: "문서", type: "doc" });
+  await doc.runner.start(docCard.id);
+  assert.doesNotMatch(doc.created[0].prompt, /저장소: 이름/);
+  const off = await setup({ useWorktree: false });
+  off.attach();
+  await off.runner.start((await off.runner.add({ workspaceId: "w", cwd: root, title: "끔" })).id);
+  assert.doesNotMatch(off.created[0].prompt, /저장소: 이름/);
+  const repo = await setup();
+  repo.attach();
+  await repo.runner.start((await repo.runner.add({ workspaceId: "w", cwd: join(root, "api"), title: "저장소 안" })).id);
+  assert.doesNotMatch(repo.created[0].prompt, /저장소: 이름/);
+});
+
+test("a failed link blocks the card with the reason, and a queued card starts once the first has left the folder", async () => {
+  const broken = await setup();
+  const root = await repoFolder();
+  broken.attach();
+  const card = await broken.runner.add({ workspaceId: "w", cwd: root, title: "실패" });
+  const planner = (await broken.runner.start(card.id))!.agentId!;
+  broken.paseo.workspaces.create = async () => {
+    throw new Error("브랜치 충돌");
+  };
+  broken.lastText.value = "저장소: api\n계획";
+  await broken.runner.onTurnEnded(planner, { kind: "completed" });
+  assert.equal(broken.store.get(card.id)!.state, "blocked");
+  assert.match(broken.store.get(card.id)!.attention!, /저장소 연결 실패: 브랜치 충돌/);
+  assert.equal(broken.store.get(card.id)!.stage, "plan");
+
+  const queue = await setup();
+  queue.attach();
+  const first = await queue.runner.add({ workspaceId: "w", cwd: root, title: "먼저" });
+  const second = await queue.runner.add({ workspaceId: "w", cwd: root, title: "다음" });
+  const firstPlanner = (await queue.runner.start(first.id))!.agentId!;
+  assert.equal((await queue.runner.start(second.id))!.queued, true);
+  queue.lastText.value = "저장소: web\n계획";
+  await queue.runner.onTurnEnded(firstPlanner, { kind: "completed" });
+  assert.equal(queue.store.get(second.id)!.stage, "plan");
+});
+
 test("every session of an in-place card lands in the card's workspace instead of opening one each", async () => {
   const { runner, store, report, attach, created, workspaceEntries, workspacesCreated } = await setup({ reviewRoles: "correctness,security" });
   attach();
