@@ -12,6 +12,9 @@ export interface PromptOptions {
   planViaMessage?: boolean;
 }
 
+/** Questions one team member may put to the worker. */
+export const MAX_WORKER_ASKS = 2;
+
 /** The first line of a message-mode plan that is a question instead of a plan. */
 export const BLOCKED_MARKER = "BLOCKED:";
 
@@ -23,6 +26,7 @@ const HEADER = (card: PromptCard, stage: AgentStage, options: PromptOptions) =>
     options.planViaMessage
       ? `규칙: 계획 전문을 마지막 메시지로 출력하면 보드가 저장한다. todo_report와 계획 승인(ExitPlanMode)은 쓰지 않는다. 진행할 수 없으면 첫 줄을 \`${BLOCKED_MARKER}\`로 시작하고 질문을 적는다.`
       : "규칙: 끝나면 `todo_report`로 보고한다(질문이 있거나 진행할 수 없으면 status=blocked).",
+    options.role ? `구현 의도를 코드만으로 알 수 없으면 판정 전에 \`todo_agent_ask\`로 구현 세션에 묻는다(세션당 ${MAX_WORKER_ASKS}회).` : null,
   ]
     .filter(Boolean)
     .join("\n");
@@ -108,3 +112,7 @@ export function stagePrompt(card: PromptCard, stage: AgentStage, options: Prompt
     stage === "plan" ? PLAN(card, Boolean(options.planViaMessage)) : stage === "implement" ? IMPLEMENT(card, options.extra) : (options.role?.prompt(card) ?? "");
   return [HEADER(card, stage, options), body, options.role ? PRIOR(card) : null].filter(Boolean).join("\n\n");
 }
+
+/** What the worker sees when a team member asks it something during review or QA. */
+export const workerQuestionPrompt = (asker: string, question: string): string =>
+  `[투두 보드 질문 · ${asker}] 검토 세션의 질문이다. 코드를 수정하지 말고, todo_report 없이 답만 마지막 메시지로 짧게 적는다.\n\n${question}`;

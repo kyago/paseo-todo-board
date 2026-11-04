@@ -48,7 +48,7 @@ export const ROLES: Role[] = [
     label: "테스트 적정성",
     stage: "review",
     prompt: (card) =>
-      ["목표: 변경된 동작이 테스트로 검증되는지 확인한다.", scope(card), `${NO_EDIT} 변경된 동작에 테스트가 전혀 없으면 status=fail에 추가할 테스트 목록을 보고하고, 그 밖의 의견은 status=done의 summary에 제안으로 적는다.`].join("\n"),
+      ["목표: 변경된 동작이 테스트로 검증되는지 확인한다.", scope(card), `${NO_EDIT} 카드 상세가 테스트를 제외했으면 테스트가 없어도 fail이 아니다. 그렇지 않은데 변경된 동작에 테스트가 전혀 없으면 status=fail에 추가할 테스트 목록을 보고하고, 그 밖의 의견은 status=done의 summary에 제안으로 적는다.`].join("\n"),
   },
   {
     id: "qa-run",

@@ -148,3 +148,15 @@ test("only a card in a folder of repositories is asked to name one, and only a l
   assert.equal(plannedRepo("# 제목\n첫 줄\n둘째 줄\n저장소: api", repos), null);
   assert.equal(plannedRepo("저장소: api", []), null);
 });
+
+test("only team prompts offer todo_agent_ask", () => {
+  assert.match(stagePrompt(card, "review", { role: ROLES[0] }), /todo_agent_ask/);
+  assert.doesNotMatch(stagePrompt(card, "implement"), /todo_agent_ask/);
+});
+
+test("the test role yields to a card that excludes tests, and the plan cannot exempt them", () => {
+  const tests = ROLES.find((role) => role.id === "tests")!;
+  const text = stagePrompt({ ...card, plan: "테스트는 만들지 않는다" }, "review", { role: tests });
+  assert.match(text, /카드 상세가 테스트를 제외했으면 테스트가 없어도 fail이 아니다/);
+  assert.doesNotMatch(text, /<plan>/);
+});

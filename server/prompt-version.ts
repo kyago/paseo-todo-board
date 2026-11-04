@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { AGENT_STAGES } from "../shared/board.ts";
-import { ratingPrompt, stagePrompt } from "../shared/prompts.ts";
+import { ratingPrompt, stagePrompt, workerQuestionPrompt } from "../shared/prompts.ts";
 import { type PromptCard, ROLES } from "../shared/roles.ts";
 
 const SAMPLE: PromptCard = { id: "sample", title: "제목", detail: "상세", baseRef: "base", planPath: "/plan.md", plan: "계획", priorRounds: "이전 회차" };
@@ -15,7 +15,7 @@ export const promptVersion = (): string =>
       stagePrompt(card, "implement", { extra: "반려 사유" }),
       stagePrompt(card, "plan", { planViaMessage: true }),
       ...ROLES.map((role) => stagePrompt(card, role.stage, { role })),
-    ]),
+    ]).concat(workerQuestionPrompt("역할", "질문")),
   );
 
 export const ratingVersion = (): string => hash(SAMPLES.map(ratingPrompt));

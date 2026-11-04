@@ -5,7 +5,7 @@ import { installMcpScript } from "./server/mcp.ts";
 import { boardFile, inboxDir, mcpScriptFile, plansDir } from "./server/paths.ts";
 import { Runner } from "./server/runner.ts";
 import { BoardStore } from "./server/store.ts";
-import { boardTools, CARD_LABEL } from "./server/tools.ts";
+import { askTools, boardTools, CARD_LABEL } from "./server/tools.ts";
 import { addCard, cardAction, clientLog, listAllCards, listCards, rateCard } from "./shared/board.ts";
 import { type BoardSettingsValues, boardSettings } from "./shared/settings.ts";
 
@@ -69,12 +69,12 @@ export default function contribute(server: PluginServerContext) {
   });
 
   const removers = [
-    // Every session gets todo_add/todo_start; the board's own sessions (card label) also get todo_report.
+    // Every session gets todo_add/todo_start; the board's own sessions (card label) also get todo_report, and team sessions todo_agent_ask.
     server.before("agent.session_open", async ({ request }, { paseo }) => {
       await ready;
       runner.attach(paseo);
       if (!request.labels[CARD_LABEL] && !values.injectTools) return;
-      return { ...request, tools: [...request.tools, ...boardTools(inbox, request.labels, request.cwd)] };
+      return { ...request, tools: [...request.tools, ...boardTools(inbox, request.labels, request.cwd), ...askTools(request.labels, (cardId, askerId, question) => runner.askWorker(cardId, askerId, question))] };
     }),
     // The earliest moments a daemon session reaches the plugin; a `todo_start` before any of them waits in the queue.
     server.on("agent.turn_started", async (_event, { paseo }) => {

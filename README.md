@@ -22,4 +22,4 @@ paseo plugin reload todo-board
 ```
 
 - `shared/` Zod 계약·프롬프트, `server/` 상태기계·저장소·에이전트 도구·러너, `client/` 사이드바 화면과 설정.
-- 세션이 쓰는 플러그인 도구(`defineAgentTool`): `todo_add`, `todo_start`, `todo_complete`, `todo_report`(보드가 만든 세션만). 보드 상태는 `~/.paseo/plugin-data/todo-board/`.
+- 세션이 쓰는 플러그인 도구(`defineAgentTool`): `todo_add`, `todo_start`, `todo_complete`, `todo_report`(보드가 만든 세션만), `todo_agent_ask`(검토·QA 세션만, 구현 세션에 질문). 보드 상태는 `~/.paseo/plugin-data/todo-board/`.
